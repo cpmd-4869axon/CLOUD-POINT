@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Sentry Brain.js v10.0</title>
+    <title>Sentry Brain.js v10.1</title>
     
     <script src="https://unpkg.com/brain.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -11,58 +11,70 @@
 
     <style>
         body { margin: 0; background: #000; color: #0f0; font-family: 'Courier New', monospace; overflow: hidden; }
-        #ui { position: absolute; top: 10px; left: 10px; z-index: 100; background: rgba(0,20,0,0.9); padding: 15px; border: 1px solid #0f0; width: 250px; }
+        #ui { position: absolute; top: 10px; left: 10px; z-index: 100; background: rgba(0,25,0,0.95); padding: 15px; border: 1px solid #0f0; width: 260px; }
         #pip { position: absolute; top: 10px; right: 10px; width: 100px; height: 75px; border: 1px solid #0f0; background: #111; z-index: 101; }
         #v { width: 100%; height: 100%; object-fit: cover; }
         .btn { display: block; width: 100%; padding: 10px; margin-top: 8px; background: #0f0; color: #000; border: none; font-weight: bold; cursor: pointer; text-transform: uppercase; font-size: 11px; }
-        #log { font-size: 9px; color: #0ff; margin-top: 10px; height: 40px; overflow: hidden; }
+        .btn:disabled { background: #030; color: #060; }
+        #log { font-size: 9px; color: #0ff; margin-top: 10px; height: 40px; overflow-y: auto; }
+        .slider-label { font-size: 10px; margin-top: 10px; color: #aaa; }
+        input[type=range] { width: 100%; accent-color: #0f0; }
     </style>
 </head>
 <body>
 
 <div id="ui">
-    <div style="font-weight: bold; border-bottom: 1px solid #0f0; padding-bottom: 5px;">SENTRY BRAIN v10.0</div>
-    <button id="btnInit" class="btn">BOOT BRAIN.JS</button>
-    <button id="btnToggle" class="btn" style="display:none">START SCAN</button>
-    <button id="btnClear" class="btn">RESET MESH</button>
-    <div id="log">SYSTEM READY.</div>
-    <div id="stats" style="font-size: 10px; margin-top: 5px;">VOXELS: 0</div>
+    <div style="font-weight: bold; border-bottom: 1px solid #0f0; padding-bottom: 5px;">SENTRY BRAIN v10.1</div>
+    <div id="log">SYSTEM READY...</div>
+    <button id="btnInit" class="btn">INITIALIZE NEURAL CORE</button>
+    <button id="btnToggle" class="btn" style="display:none">START CONSTRUCTING</button>
+    
+    <div class="slider-label">BRAIN SENSITIVITY (KEYBOARD DEPTH)</div>
+    <input type="range" id="sens" min="1" max="20" value="10">
+    
+    <button id="btnClear" class="btn">RESET WORLD</button>
 </div>
 
-<div id="pip"><canvas id="c_process" style="display:none"></canvas><video id="v" autoplay playsinline muted></video></div>
+<div id="pip"><canvas id="c_proc" style="display:none"></canvas><video id="v" autoplay playsinline muted></video></div>
 
 <script>
-    let scene, camera, renderer, net, stream;
-    let isScanning = false;
+    let scene, camera, renderer, brainNet, stream;
+    let isBuilding = false;
     let voxelMap = new Map();
-    let instancedMesh;
-    const MAX_VOXELS = 40000;
-    const VOXEL_SIZE = 0.2;
-    const RES = 32; // Resolution for brain.js processing
+    let mesh;
+    const MAX_PTS = 50000;
+    const SIZE = 0.2;
+    const SCAN_RES = 32;
 
     async function init() {
-        document.getElementById('btnInit').innerText = "TRAINING BRAIN...";
+        const btn = document.getElementById('btnInit');
+        btn.disabled = true;
+        btn.innerText = "TRAINING...";
         
-        // brain.js works best with simple numeric data
-        net = new brain.NeuralNetwork();
-        
-        // Simple training: Map luminance to approximate depth
-        // This acts as a placeholder for a complex depth model
-        net.train([
-            { input: { r: 0, g: 0, b: 0 }, output: { depth: 0 } },
-            { input: { r: 1, g: 1, b: 1 }, output: { depth: 1 } }
-        ]);
+        try {
+            // Brain.js Neural Network training for contrast-based depth
+            brainNet = new brain.NeuralNetwork();
+            brainNet.train([
+                { input: { i: 0 }, output: { d: 0.1 } }, // Dark = Far
+                { input: { i: 0.5 }, output: { d: 0.5 } }, 
+                { input: { i: 1 }, output: { d: 1.0 } }  // Light = Near
+            ]);
 
-        stream = await navigator.mediaDevices.getUserMedia({ 
-            video: { width: 128, height: 128, facingMode: "environment" } 
-        });
-        document.getElementById('v').srcObject = stream;
+            stream = await navigator.mediaDevices.getUserMedia({ 
+                video: { width: 128, height: 128, facingMode: "environment" } 
+            });
+            document.getElementById('v').srcObject = stream;
 
-        setup3D();
-        document.getElementById('btnInit').style.display = "none";
-        document.getElementById('btnToggle').style.display = "block";
-        document.getElementById('log').innerText = "BRAIN ONLINE.";
-        runLoop();
+            setup3D();
+            
+            document.getElementById('log').innerText = "BRAIN CORE ONLINE.";
+            document.getElementById('btnToggle').style.display = "block";
+            btn.style.display = "none";
+            
+            loop();
+        } catch (e) {
+            document.getElementById('log').innerText = "FATAL: " + e.message;
+        }
     }
 
     function setup3D() {
@@ -74,69 +86,72 @@
         document.body.appendChild(renderer.domElement);
         new THREE.OrbitControls(camera, renderer.domElement);
         
-        instancedMesh = new THREE.InstancedMesh(
-            new THREE.BoxGeometry(VOXEL_SIZE, VOXEL_SIZE, VOXEL_SIZE),
+        mesh = new THREE.InstancedMesh(
+            new THREE.BoxGeometry(SIZE, SIZE, SIZE),
             new THREE.MeshBasicMaterial({ color: 0x00ff00 }),
-            MAX_VOXELS
+            MAX_PTS
         );
-        scene.add(instancedMesh);
-        scene.add(new THREE.GridHelper(20, 20, 0x004400, 0x001100));
+        scene.add(mesh);
+        scene.add(new THREE.GridHelper(20, 20, 0x002200, 0x001100));
     }
 
-    function runLoop() {
+    function loop() {
         const video = document.getElementById('v');
-        if (isScanning && video.readyState === 4) {
-            const canvas = document.getElementById('c_process');
-            canvas.width = RES; canvas.height = RES;
+        if (isBuilding && video.readyState === 4) {
+            const canvas = document.getElementById('c_proc');
+            canvas.width = SCAN_RES; canvas.height = SCAN_RES;
             const ctx = canvas.getContext('2d');
-            ctx.drawImage(video, 0, 0, RES, RES);
-            const data = ctx.getImageData(0, 0, RES, RES).data;
+            ctx.drawImage(video, 0, 0, SCAN_RES, SCAN_RES);
+            const pixels = ctx.getImageData(0, 0, SCAN_RES, SCAN_RES).data;
 
             const dummy = new THREE.Object3D();
-            for (let i = 0; i < data.length; i += 16) { // Downsampled for speed
-                const r = data[i]/255, g = data[i+1]/255, b = data[i+2]/255;
+            const sens = document.getElementById('sens').value;
+
+            for (let i = 0; i < pixels.length; i += 16) {
+                // Calculate intensity (grayscale)
+                const intensity = (pixels[i] + pixels[i+1] + pixels[i+2]) / 765;
                 
-                // Use Brain.js to predict "depth" based on pixel luminance
-                const output = net.run({ r, g, b });
-                const depth = output.depth;
+                // Brain.js handles the depth prediction
+                const prediction = brainNet.run({ i: intensity });
+                const depthValue = prediction.d;
 
-                if (depth < 0.2) continue;
+                if (depthValue < 0.2) continue;
 
-                const x = ((i/4) % RES - RES/2) * 0.4;
-                const y = (RES/2 - Math.floor((i/4) / RES)) * 0.4;
+                // Project into 3D Space
+                const x = ((i/4) % SCAN_RES - SCAN_RES/2) * 0.4;
+                const y = (SCAN_RES/2 - Math.floor((i/4) / SCAN_RES)) * 0.4;
                 
-                const worldPos = new THREE.Vector3(x, y, depth * -10);
-                worldPos.applyQuaternion(camera.quaternion);
-                worldPos.add(camera.position);
+                const pos = new THREE.Vector3(x, y, depthValue * -sens);
+                pos.applyQuaternion(camera.quaternion);
+                pos.add(camera.position);
 
-                const gx = Math.round(worldPos.x/VOXEL_SIZE)*VOXEL_SIZE;
-                const gy = Math.round(worldPos.y/VOXEL_SIZE)*VOXEL_SIZE;
-                const gz = Math.round(worldPos.z/VOXEL_SIZE)*VOXEL_SIZE;
+                const gx = Math.round(pos.x/SIZE)*SIZE;
+                const gy = Math.round(pos.y/SIZE)*SIZE;
+                const gz = Math.round(pos.z/SIZE)*SIZE;
                 const key = `${gx},${gy},${gz}`;
 
-                if (!voxelMap.has(key) && voxelMap.size < MAX_VOXELS) {
+                if (!voxelMap.has(key) && voxelMap.size < MAX_PTS) {
                     voxelMap.set(key, true);
                     dummy.position.set(gx, gy, gz);
                     dummy.updateMatrix();
-                    instancedMesh.setMatrixAt(voxelMap.size - 1, dummy.matrix);
+                    mesh.setMatrixAt(voxelMap.size - 1, dummy.matrix);
                 }
             }
-            instancedMesh.instanceMatrix.needsUpdate = true;
-            document.getElementById('stats').innerText = `VOXELS: ${voxelMap.size}`;
+            mesh.instanceMatrix.needsUpdate = true;
         }
         renderer.render(scene, camera);
-        requestAnimationFrame(runLoop);
+        requestAnimationFrame(loop);
     }
 
     document.getElementById('btnToggle').onclick = function() {
-        isScanning = !isScanning;
-        this.innerText = isScanning ? "STOP SCAN" : "RESUME SCAN";
-        this.style.background = isScanning ? "#f00" : "#0f0";
+        isBuilding = !isBuilding;
+        this.innerText = isBuilding ? "PAUSE CONSTRUCT" : "RESUME CONSTRUCT";
+        this.style.background = isBuilding ? "#f00" : "#0f0";
     };
 
     document.getElementById('btnClear').onclick = () => {
         voxelMap.clear();
-        instancedMesh.instanceMatrix.needsUpdate = true;
+        mesh.instanceMatrix.needsUpdate = true;
     };
 
     document.getElementById('btnInit').onclick = init;
