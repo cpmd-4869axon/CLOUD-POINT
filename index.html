@@ -3,70 +3,57 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Sentry Brain v11.0</title>
-    
+    <title>Sentry Brain v11.5</title>
     <script src="https://unpkg.com/brain.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
-
     <style>
-        body { margin: 0; background: #000; color: #0f0; font-family: 'Courier New', monospace; overflow: hidden; }
-        #ui { position: absolute; top: 10px; left: 10px; z-index: 100; background: rgba(0,20,0,0.9); padding: 15px; border: 1px solid #0f0; width: 240px; }
-        .btn { display: block; width: 100%; padding: 12px; margin-top: 8px; background: #0f0; color: #000; border: none; font-weight: bold; cursor: pointer; text-transform: uppercase; font-size: 11px; }
-        .btn-clear { background: #555 !important; color: #fff; }
-        #log { font-size: 9px; color: #0ff; margin-top: 10px; height: 30px; overflow: hidden; }
-        #pip { position: absolute; top: 10px; right: 10px; width: 100px; height: 75px; border: 1px solid #0f0; z-index: 101; }
-        #v { width: 100%; height: 100%; object-fit: cover; }
+        body { margin: 0; background: #000; color: #0f0; font-family: monospace; overflow: hidden; }
+        #ui { position: absolute; top: 10px; left: 10px; z-index: 100; background: rgba(0,20,0,0.9); padding: 15px; border: 1px solid #0f0; width: 220px; }
+        .btn { display: block; width: 100%; padding: 12px; margin-top: 8px; background: #0f0; color: #000; border: none; font-weight: bold; cursor: pointer; }
+        #v { position: absolute; top: 10px; right: 10px; width: 120px; height: 90px; border: 1px solid #0f0; background: #111; object-fit: cover; }
     </style>
 </head>
 <body>
 
 <div id="ui">
-    <div style="font-weight: bold; border-bottom: 1px solid #0f0; padding-bottom: 5px;">SENTRY BRAIN v11.0</div>
-    <button id="btnInit" class="btn">BOOT BRAIN</button>
+    <div style="font-weight: bold;">SENTRY v11.5</div>
+    <button id="btnInit" class="btn">BOOT ENGINE</button>
     <button id="btnToggle" class="btn" style="display:none">START SCAN</button>
-    <button id="btnClear" class="btn btn-clear">CLEAR 3D WORLD</button>
-    <div id="log">SYSTEM READY.</div>
+    <button id="btnClear" class="btn" style="background:#f00; color:#fff;">RESET ALL</button>
 </div>
 
-<div id="pip"><canvas id="c_proc" style="display:none"></canvas><video id="v" autoplay playsinline muted></video></div>
+<video id="v" autoplay playsinline muted></video>
+<canvas id="c_proc" style="display:none"></canvas>
 
 <script>
-    let scene, camera, renderer, brainNet, stream;
+    let scene, camera, renderer, brainNet, stream, mesh;
     let isScanning = false;
     let voxelMap = new Map();
-    let mesh;
-    const MAX_PTS = 60000;
-    const SIZE = 0.2;
-    const RES = 40;
+    const MAX_PTS = 80000;
+    const SIZE = 0.15; // Smaller blocks for detail
+    const dummy = new THREE.Object3D();
 
     async function init() {
         document.getElementById('btnInit').innerText = "CALIBRATING...";
-        
-        // Train Brain.js to recognize "Structure" (high contrast edges)
-        brainNet = new brain.NeuralNetwork();
-        brainNet.train([
-            { input: { contrast: 0 }, output: { build: 0 } }, 
-            { input: { contrast: 0.8 }, output: { build: 1 } }
-        ]);
-
-        stream = await navigator.mediaDevices.getUserMedia({ 
-            video: { width: 160, height: 160, facingMode: "environment" } 
-        });
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
         document.getElementById('v').srcObject = stream;
+        
+        // Train a basic "Contrast Brain" to identify object edges
+        brainNet = new brain.NeuralNetwork();
+        brainNet.train([{ input: { c: 0 }, output: { d: 0 } }, { input: { c: 1 }, output: { d: 1 } }]);
 
         setup3D();
         document.getElementById('btnInit').style.display = "none";
         document.getElementById('btnToggle').style.display = "block";
-        document.getElementById('log').innerText = "BRAIN ONLINE.";
-        runLoop();
+        loop();
     }
 
     function setup3D() {
         scene = new THREE.Scene();
         camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
-        camera.position.set(5, 5, 10);
-        renderer = new THREE.WebGLRenderer({ antialias: false });
+        camera.position.set(0, 5, 10);
+        renderer = new THREE.WebGLRenderer();
         renderer.setSize(window.innerWidth, window.innerHeight);
         document.body.appendChild(renderer.domElement);
         new THREE.OrbitControls(camera, renderer.domElement);
@@ -76,40 +63,33 @@
             new THREE.MeshBasicMaterial({ color: 0x00ff00 }),
             MAX_PTS
         );
+        // Initialize all matrices to "hidden" (scale 0)
+        const offMatrix = new THREE.Matrix4().makeScale(0, 0, 0);
+        for(let i=0; i<MAX_PTS; i++) mesh.setMatrixAt(i, offMatrix);
         scene.add(mesh);
-        scene.add(new THREE.GridHelper(20, 20, 0x003300, 0x001100));
     }
 
-    function runLoop() {
+    function loop() {
         const video = document.getElementById('v');
         if (isScanning && video.readyState === 4) {
             const canvas = document.getElementById('c_proc');
-            canvas.width = RES; canvas.height = RES;
             const ctx = canvas.getContext('2d');
-            ctx.drawImage(video, 0, 0, RES, RES);
-            const pixels = ctx.getImageData(0, 0, RES, RES).data;
+            canvas.width = 40; canvas.height = 40;
+            ctx.drawImage(video, 0, 0, 40, 40);
+            const data = ctx.getImageData(0, 0, 40, 40).data;
 
-            const dummy = new THREE.Object3D();
-            for (let i = 0; i < pixels.length; i += 16) {
-                // Heuristic: Calculate contrast/edge strength for object "carving"
-                const brightness = (pixels[i] + pixels[i+1] + pixels[i+2]) / 3;
-                const nextBrightness = (pixels[i+4] || brightness);
-                const contrast = Math.abs(brightness - nextBrightness) / 255;
-
-                const result = brainNet.run({ contrast });
-                if (result.build < 0.5) continue;
-
-                const x = ((i/4) % RES - RES/2) * 0.45;
-                const y = (RES/2 - Math.floor((i/4) / RES)) * 0.45;
+            for (let i = 0; i < data.length; i += 16) {
+                const lum = (data[i] + data[i+1] + data[i+2]) / 765;
+                const edge = Math.abs(lum - (data[i+4] || 0)/255);
                 
-                // Use relative intensity for depth Z-axis
-                const worldPos = new THREE.Vector3(x, y, (brightness/255) * -8);
-                worldPos.applyQuaternion(camera.quaternion);
-                worldPos.add(camera.position);
+                if (brainNet.run({ c: edge }).d < 0.1) continue;
 
-                const gx = Math.round(worldPos.x/SIZE)*SIZE;
-                const gy = Math.round(worldPos.y/SIZE)*SIZE;
-                const gz = Math.round(worldPos.z/SIZE)*SIZE;
+                const x = ((i/4) % 40 - 20) * 0.5;
+                const y = (20 - Math.floor((i/4) / 40)) * 0.5;
+                const z = (lum * -10); // Lighter = Closer effect
+
+                const pos = new THREE.Vector3(x, y, z).applyQuaternion(camera.quaternion).add(camera.position);
+                const gx = Math.round(pos.x/SIZE)*SIZE, gy = Math.round(pos.y/SIZE)*SIZE, gz = Math.round(pos.z/SIZE)*SIZE;
                 const key = `${gx},${gy},${gz}`;
 
                 if (!voxelMap.has(key) && voxelMap.size < MAX_PTS) {
@@ -117,26 +97,27 @@
                     dummy.position.set(gx, gy, gz);
                     dummy.updateMatrix();
                     mesh.setMatrixAt(voxelMap.size - 1, dummy.matrix);
+                    mesh.instanceMatrix.needsUpdate = true;
                 }
             }
-            mesh.instanceMatrix.needsUpdate = true;
         }
         renderer.render(scene, camera);
-        requestAnimationFrame(runLoop);
+        requestAnimationFrame(loop);
     }
+
+    // FIX: THE CLEAR FUNCTION
+    document.getElementById('btnClear').onclick = () => {
+        voxelMap.clear();
+        const hide = new THREE.Matrix4().makeScale(0,0,0);
+        for(let i=0; i<MAX_PTS; i++) mesh.setMatrixAt(i, hide);
+        mesh.instanceMatrix.needsUpdate = true;
+        console.log("3D World Wiped.");
+    };
 
     document.getElementById('btnToggle').onclick = function() {
         isScanning = !isScanning;
-        this.innerText = isScanning ? "STOP BUILDING" : "RESUME SCAN";
-        this.style.background = isScanning ? "#f00" : "#0f0";
+        this.innerText = isScanning ? "STOP SCAN" : "RESUME SCAN";
     };
-
-    document.getElementById('btnClear').onclick = () => {
-        voxelMap.clear();
-        mesh.instanceMatrix.needsUpdate = true;
-        document.getElementById('log').innerText = "WORLD CLEARED.";
-    };
-
     document.getElementById('btnInit').onclick = init;
 </script>
 </body>
