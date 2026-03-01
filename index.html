@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Sentry Depth Mapper v3.2</title>
+    <title>Sentry Depth Mapper v3.3</title>
     
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.15.0"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation"></script>
@@ -42,24 +42,31 @@
     let isScanning = false;
     let lastDepthData = null;
     let coords = "0.0, 0.0";
-    const RES = 128; // Optimized for mobile GPU
+    const RES = 128; // Mobile-safe resolution
 
     const v = document.getElementById('v');
     const log = document.getElementById('log');
 
     async function init() {
-        document.getElementById('btnInit').innerText = "LOADING MODELS...";
+        document.getElementById('btnInit').innerText = "LOADING ENGINE...";
+        log.innerText = "";
+        
         try {
-            // Force WebGL and wait for TF
+            // Check for MediaPipe Global
+            if (typeof SelfieSegmentation === 'undefined') {
+                throw new Error("MediaPipe not loaded. Check internet connection.");
+            }
+
             await tf.setBackend('webgl');
             await tf.ready();
             
-            // Initialize Estimator with MediaPipe support
-            estimator = await depthEstimation.createEstimator(
-                depthEstimation.SupportedModels.ARPortraitDepth
-            );
+            // Initialize Estimator with explicit runtime configuration
+            const model = depthEstimation.SupportedModels.ARPortraitDepth;
+            estimator = await depthEstimation.createEstimator(model, {
+                runtime: 'mediapipe',
+                solutionPath: 'https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation'
+            });
             
-            // Camera setup
             const stream = await navigator.mediaDevices.getUserMedia({ 
                 video: { width: RES, height: RES, facingMode: "environment" } 
             });
@@ -74,7 +81,8 @@
             document.getElementById('btnToggle').disabled = false;
             document.getElementById('btnInit').innerText = "ENGINE READY";
         } catch (e) {
-            log.innerText = "ERR: " + e.message + " (Check HTTPS)";
+            log.innerText = "CRITICAL: " + e.message;
+            console.error(e);
         }
     }
 
@@ -115,12 +123,12 @@
             lastDepthData = await depth.toArray();
             const attr = points.geometry.attributes.position.array;
             let i = 0;
-            const scale = 0.15;
+            const scale = 0.12; 
             for(let y=0; y<RES; y++) {
                 for(let x=0; x<RES; x++) {
                     attr[i++] = (x - RES/2) * scale; 
                     attr[i++] = (RES/2 - y) * scale; 
-                    attr[i++] = lastDepthData[y][x] * -20; 
+                    attr[i++] = lastDepthData[y][x] * -15; 
                 }
             }
             points.geometry.attributes.position.needsUpdate = true;
@@ -146,7 +154,7 @@
         let out = `# SENTRY SCAN | GPS: ${coords}\n`;
         for(let y=0; y<RES; y++) {
             for(let x=0; x<RES; x++) {
-                out += `${((x-RES/2)*0.15).toFixed(3)} ${((RES/2-y)*0.15).toFixed(3)} ${(lastDepthData[y][x]*-20).toFixed(3)}\n`;
+                out += `${((x-RES/2)*0.12).toFixed(3)} ${((RES/2-y)*0.12).toFixed(3)} ${(lastDepthData[y][x]*-15).toFixed(3)}\n`;
             }
         }
         const a = document.createElement('a');
