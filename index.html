@@ -3,188 +3,207 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Sentry Brain v12.0</title>
-    <script src="https://unpkg.com/brain.js"></script>
+    <title>SENTRY ADVANCED v13.0</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
     <style>
-        body { margin: 0; background: #000; color: #0f0; font-family: 'Courier New', monospace; overflow: hidden; }
-        #ui { position: absolute; top: 15px; left: 15px; z-index: 100; background: rgba(0,10,0,0.85); padding: 20px; border: 1px solid #0f0; width: 240px; box-shadow: 0 0 15px rgba(0,255,0,0.2); }
-        .btn { display: block; width: 100%; padding: 12px; margin-top: 10px; background: transparent; color: #0f0; border: 1px solid #0f0; font-weight: bold; cursor: pointer; transition: 0.3s; }
-        .btn:hover { background: #0f0; color: #000; }
-        #stats { font-size: 10px; margin-top: 10px; color: #0a0; }
-        #v { position: absolute; bottom: 15px; right: 15px; width: 160px; height: 120px; border: 1px solid #0f0; background: #111; object-fit: cover; opacity: 0.7; }
-        .latent-tag { position: absolute; top: 15px; right: 15px; font-size: 12px; }
+        :root { --neon: #00ff41; --bg: #050505; }
+        body { margin: 0; background: var(--bg); color: var(--neon); font-family: 'IBM Plex Mono', monospace; overflow: hidden; }
+        #os-interface { position: absolute; top: 20px; left: 20px; z-index: 10; width: 280px; pointer-events: none; }
+        .panel { background: rgba(0, 20, 0, 0.8); border: 1px solid var(--neon); padding: 15px; pointer-events: all; margin-bottom: 10px; }
+        .glitch-text { text-transform: uppercase; font-weight: 900; letter-spacing: 3px; border-bottom: 2px solid var(--neon); margin-bottom: 10px; }
+        .btn { display: block; width: 100%; padding: 10px; margin-top: 5px; background: transparent; color: var(--neon); border: 1px solid var(--neon); cursor: pointer; font-size: 11px; }
+        .btn:hover { background: var(--neon); color: #000; }
+        #v { position: absolute; bottom: 20px; right: 20px; width: 200px; height: 150px; border: 1px solid var(--neon); transform: scaleX(-1); filter: contrast(1.2) brightness(0.8) sepia(1) hue-rotate(80deg); }
+        .stat-row { display: flex; justify-content: space-between; font-size: 10px; margin: 4px 0; }
     </style>
 </head>
 <body>
 
-<div id="ui">
-    <div style="letter-spacing: 2px; border-bottom: 1px solid #0f0; padding-bottom: 5px;">SENTRY_OS_v12</div>
-    <div id="stats">NODES: <span id="nodeCount">0</span> / 80k</div>
-    <button id="btnInit" class="btn">BOOT CORE</button>
-    <div id="controls" style="display:none">
-        <button id="btnToggle" class="btn">START SCAN</button>
-        <button id="btnClear" class="btn" style="border-color:#f00; color:#f00;">PURGE MEMORY</button>
+<div id="os-interface">
+    <div class="panel">
+        <div class="glitch-text">SENTRY_CORE</div>
+        <div class="stat-row"><span>STATUS:</span> <span id="status">IDLE</span></div>
+        <div class="stat-row"><span>NODES:</span> <span id="nodeCount">0</span></div>
+        <div class="stat-row"><span>MEMORY:</span> <span id="memUsage">0%</span></div>
+        <button id="btnInit" class="btn">INITIALIZE NEURAL LINK</button>
+        <div id="active-controls" style="display:none">
+            <button id="btnToggle" class="btn">ENGAGE SCANNER</button>
+            <button id="btnExport" class="btn">GENERATE POINT CLOUD</button>
+            <button id="btnClear" class="btn" style="border-color: #ff3333; color: #ff3333;">PURGE DATA</button>
+        </div>
     </div>
 </div>
 
 <video id="v" autoplay playsinline muted></video>
-<canvas id="c_proc" style="display:none"></canvas>
 
 <script>
-    let scene, camera, renderer, brainNet, mesh, controls;
-    let isScanning = false;
-    let voxelMap = new Set();
-    const MAX_PTS = 80000;
-    const SIZE = 0.12; 
-    const dummy = new THREE.Object3D();
-    const color = new THREE.Color();
+    // Configuration
+    const CONFIG = {
+        MAX_POINTS: 100000,
+        VOXEL_SIZE: 0.1,
+        SCAN_RES: 48,
+        DECAY_RATE: 0.998, // Points shrink over time if not refreshed
+        LUM_THRESHOLD: 0.25
+    };
 
-    // Initialize Neural Net with more diverse training for edge detection
-    async function initAI() {
-        brainNet = new brain.NeuralNetwork();
-        brainNet.train([
-            { input: { r: 0, g: 0, b: 0 }, output: { edge: 0 } },
-            { input: { r: 1, g: 1, b: 1 }, output: { edge: 0 } },
-            { input: { r: 0.5, g: 0.5, b: 0.1 }, output: { edge: 1 } }
-        ]);
-    }
+    let scene, camera, renderer, controls, mesh;
+    let isScanning = false;
+    let voxelData = new Map(); // Store { index, age, color }
+    let freeIndices = Array.from({length: CONFIG.MAX_POINTS}, (_, i) => i);
+    
+    const dummy = new THREE.Object3D();
+    const tempColor = new THREE.Color();
+    const tempPos = new THREE.Vector3();
 
     async function init() {
-        const btnInit = document.getElementById('btnInit');
-        btnInit.innerText = "CONNECTING SENSORS...";
-        
+        document.getElementById('status').innerText = "CONNECTING...";
         try {
-            const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+            const stream = await navigator.mediaDevices.getUserMedia({ 
+                video: { width: 640, height: 480, facingMode: "environment" } 
+            });
             document.getElementById('v').srcObject = stream;
             
-            await initAI();
             setup3D();
-            
-            btnInit.style.display = "none";
-            document.getElementById('controls').style.display = "block";
-            loop();
+            document.getElementById('btnInit').style.display = 'none';
+            document.getElementById('active-controls').style.display = 'block';
+            document.getElementById('status').innerText = "ONLINE";
+            renderLoop();
         } catch (e) {
-            btnInit.innerText = "SENSOR ERROR";
-            console.error(e);
+            document.getElementById('status').innerText = "LINK_FAIL";
         }
     }
 
     function setup3D() {
         scene = new THREE.Scene();
-        scene.fog = new THREE.FogExp2(0x000000, 0.05);
+        camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 500);
+        camera.position.set(2, 2, 5);
 
-        camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
-        camera.position.set(5, 5, 5);
-
-        renderer = new THREE.WebGLRenderer({ antialias: true });
-        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "high-performance" });
         renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
         document.body.appendChild(renderer.domElement);
-        
+
         controls = new THREE.OrbitControls(camera, renderer.domElement);
         controls.enableDamping = true;
 
-        // Using MeshLambert for slight depth shading
-        const geometry = new THREE.BoxGeometry(SIZE, SIZE, SIZE);
+        const geometry = new THREE.BoxGeometry(CONFIG.VOXEL_SIZE, CONFIG.VOXEL_SIZE, CONFIG.VOXEL_SIZE);
         const material = new THREE.MeshBasicMaterial({ vertexColors: true });
+        mesh = new THREE.InstancedMesh(geometry, material, CONFIG.MAX_POINTS);
         
-        mesh = new THREE.InstancedMesh(geometry, material, MAX_PTS);
-        
-        // Hide instances initially
-        const matrix = new THREE.Matrix4().makeScale(0, 0, 0);
-        for(let i = 0; i < MAX_PTS; i++) mesh.setMatrixAt(i, matrix);
+        // Initialize with zero scale
+        const hidden = new THREE.Matrix4().makeScale(0, 0, 0);
+        for(let i=0; i<CONFIG.MAX_POINTS; i++) mesh.setMatrixAt(i, hidden);
         
         scene.add(mesh);
     }
 
-    function loop() {
+    function processScanning() {
         const video = document.getElementById('v');
-        if (isScanning && video.readyState === 4) {
-            processFrame(video);
+        if (video.readyState !== 4) return;
+
+        const offCanvas = document.createElement('canvas');
+        offCanvas.width = offCanvas.height = CONFIG.SCAN_RES;
+        const ctx = offCanvas.getContext('2d');
+        ctx.drawImage(video, 0, 0, CONFIG.SCAN_RES, CONFIG.SCAN_RES);
+        
+        const pixels = ctx.getImageData(0, 0, CONFIG.SCAN_RES, CONFIG.SCAN_RES).data;
+        
+        for (let i = 0; i < pixels.length; i += 16) {
+            const r = pixels[i]/255, g = pixels[i+1]/255, b = pixels[i+2]/255;
+            const lum = (r + g + b) / 3;
+
+            if (lum < CONFIG.LUM_THRESHOLD) continue;
+
+            // Project 2D UV to 3D Space based on Camera Frustum
+            const x = ((i/4) % CONFIG.SCAN_RES / CONFIG.SCAN_RES - 0.5) * 10;
+            const y = (0.5 - Math.floor((i/4) / CONFIG.SCAN_RES) / CONFIG.SCAN_RES) * 10;
+            const z = lum * -5; // Depth estimation based on brightness
+
+            tempPos.set(x, y, z).applyQuaternion(camera.quaternion).add(camera.position);
+            
+            // Grid Alignment
+            const gx = Math.round(tempPos.x / CONFIG.VOXEL_SIZE) * CONFIG.VOXEL_SIZE;
+            const gy = Math.round(tempPos.y / CONFIG.VOXEL_SIZE) * CONFIG.VOXEL_SIZE;
+            const gz = Math.round(tempPos.z / CONFIG.VOXEL_SIZE) * CONFIG.VOXEL_SIZE;
+            const key = `${gx.toFixed(1)}|${gy.toFixed(1)}|${gz.toFixed(1)}`;
+
+            if (voxelData.has(key)) {
+                // Refresh existing point
+                const entry = voxelData.get(key);
+                entry.age = 1.0;
+            } else if (freeIndices.length > 0) {
+                // Create new point
+                const idx = freeIndices.pop();
+                voxelData.set(key, { index: idx, age: 1.0, color: [r, g, b] });
+                
+                dummy.position.set(gx, gy, gz);
+                dummy.scale.set(1, 1, 1);
+                dummy.updateMatrix();
+                mesh.setMatrixAt(idx, dummy.matrix);
+                mesh.setColorAt(idx, tempColor.setRGB(r, g*1.2, b));
+            }
+        }
+    }
+
+    function updateTemporalDecay() {
+        let needsMatrixUpdate = false;
+        voxelData.forEach((data, key) => {
+            data.age *= CONFIG.DECAY_RATE; // Shrink
+            
+            if (data.age < 0.1) {
+                // Kill point
+                const hidden = new THREE.Matrix4().makeScale(0, 0, 0);
+                mesh.setMatrixAt(data.index, hidden);
+                freeIndices.push(data.index);
+                voxelData.delete(key);
+                needsMatrixUpdate = true;
+            } else {
+                // Update size based on age
+                mesh.getMatrixAt(data.index, dummy.matrix);
+                dummy.matrix.decompose(dummy.position, dummy.quaternion, dummy.scale);
+                dummy.scale.set(data.age, data.age, data.age);
+                dummy.updateMatrix();
+                mesh.setMatrixAt(data.index, dummy.matrix);
+                needsMatrixUpdate = true;
+            }
+        });
+        
+        if (needsMatrixUpdate) {
+            mesh.instanceMatrix.needsUpdate = true;
+            if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+        }
+    }
+
+    function renderLoop() {
+        if (isScanning) {
+            processScanning();
+            updateTemporalDecay();
         }
         
         controls.update();
         renderer.render(scene, camera);
-        requestAnimationFrame(loop);
+        
+        document.getElementById('nodeCount').innerText = voxelData.size;
+        document.getElementById('memUsage').innerText = ((voxelData.size / CONFIG.MAX_POINTS) * 100).toFixed(1) + "%";
+        
+        requestAnimationFrame(renderLoop);
     }
 
-    function processFrame(video) {
-        const canvas = document.getElementById('c_proc');
-        const ctx = canvas.getContext('2d', { willReadFrequently: true });
-        const res = 40; // Resolution of scan
-        canvas.width = res; canvas.height = res;
-        ctx.drawImage(video, 0, 0, res, res);
-        
-        const imgData = ctx.getImageData(0, 0, res, res).data;
-        let count = voxelMap.size;
-
-        for (let i = 0; i < imgData.length; i += 16) { // Step for performance
-            if (count >= MAX_PTS) break;
-
-            const r = imgData[i] / 255;
-            const g = imgData[i+1] / 255;
-            const b = imgData[i+2] / 255;
-            const lum = (r + g + b) / 3;
-
-            // Simple delta check for "interesting" points
-            if (lum < 0.2) continue; 
-
-            // Project point relative to camera view
-            const x = ((i/4) % res - res/2) * 0.4;
-            const y = (res/2 - Math.floor((i/4) / res)) * 0.4;
-            const z = (lum * -8); 
-
-            const pos = new THREE.Vector3(x, y, z).applyQuaternion(camera.quaternion).add(camera.position);
-            
-            // Grid snapping (Voxelization)
-            const gx = Math.round(pos.x / SIZE) * SIZE;
-            const gy = Math.round(pos.y / SIZE) * SIZE;
-            const gz = Math.round(pos.z / SIZE) * SIZE;
-            const key = `${gx}|${gy}|${gz}`;
-
-            if (!voxelMap.has(key)) {
-                voxelMap.add(key);
-                dummy.position.set(gx, gy, gz);
-                dummy.updateMatrix();
-                
-                mesh.setMatrixAt(count, dummy.matrix);
-                mesh.setColorAt(count, color.setRGB(r, g * 1.5, b)); // Boost green for 'Sentry' look
-                count++;
-            }
-        }
-        
-        if (voxelMap.size !== count) {
-            mesh.instanceMatrix.needsUpdate = true;
-            if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-            document.getElementById('nodeCount').innerText = voxelMap.size;
-        }
-    }
-
-    // --- UI EVENTS ---
-    document.getElementById('btnClear').onclick = () => {
-        voxelMap.clear();
-        const hide = new THREE.Matrix4().makeScale(0,0,0);
-        for(let i=0; i<MAX_PTS; i++) mesh.setMatrixAt(i, hide);
-        mesh.instanceMatrix.needsUpdate = true;
-        document.getElementById('nodeCount').innerText = "0";
-    };
-
+    // Controls
+    document.getElementById('btnInit').onclick = init;
     document.getElementById('btnToggle').onclick = function() {
         isScanning = !isScanning;
-        this.innerText = isScanning ? "STOP SCAN" : "RESUME SCAN";
-        this.style.background = isScanning ? "#0f0" : "transparent";
-        this.style.color = isScanning ? "#000" : "#0f0";
+        this.innerText = isScanning ? "DISENGAGE" : "ENGAGE SCANNER";
+        document.getElementById('status').innerText = isScanning ? "SCANNING" : "ONLINE";
     };
-
-    document.getElementById('btnInit').onclick = init;
-
-    window.addEventListener('resize', () => {
-        camera.aspect = window.innerWidth / window.innerHeight;
-        camera.updateProjectionMatrix();
-        renderer.setSize(window.innerWidth, window.innerHeight);
-    });
+    document.getElementById('btnClear').onclick = () => {
+        voxelData.clear();
+        freeIndices = Array.from({length: CONFIG.MAX_POINTS}, (_, i) => i);
+        const hidden = new THREE.Matrix4().makeScale(0,0,0);
+        for(let i=0; i<CONFIG.MAX_POINTS; i++) mesh.setMatrixAt(i, hidden);
+        mesh.instanceMatrix.needsUpdate = true;
+    };
 </script>
 </body>
 </html>
