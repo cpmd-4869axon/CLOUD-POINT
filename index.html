@@ -3,146 +3,126 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Sentry Constructor v9.3</title>
+    <title>Sentry Brain.js v10.0</title>
     
-    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.17.0"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/depth-estimation@0.0.4"></script>
+    <script src="https://unpkg.com/brain.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
 
     <style>
         body { margin: 0; background: #000; color: #0f0; font-family: 'Courier New', monospace; overflow: hidden; }
-        #ui { position: absolute; top: 10px; left: 10px; z-index: 100; background: rgba(0,20,0,0.9); padding: 15px; border: 1px solid #0f0; width: 260px; pointer-events: auto; }
-        #pip { position: absolute; top: 10px; right: 10px; width: 110px; height: 80px; border: 1px solid #0f0; background: #111; z-index: 101; }
+        #ui { position: absolute; top: 10px; left: 10px; z-index: 100; background: rgba(0,20,0,0.9); padding: 15px; border: 1px solid #0f0; width: 250px; }
+        #pip { position: absolute; top: 10px; right: 10px; width: 100px; height: 75px; border: 1px solid #0f0; background: #111; z-index: 101; }
         #v { width: 100%; height: 100%; object-fit: cover; }
         .btn { display: block; width: 100%; padding: 10px; margin-top: 8px; background: #0f0; color: #000; border: none; font-weight: bold; cursor: pointer; text-transform: uppercase; font-size: 11px; }
-        .btn:disabled { background: #030; color: #060; }
-        .control-label { font-size: 10px; margin-top: 10px; color: #0ff; display: block; }
-        input[type=range] { width: 100%; accent-color: #0f0; margin-top: 5px; }
-        #log { font-size: 9px; color: #888; margin-top: 10px; height: 45px; overflow-y: auto; border-top: 1px solid #222; padding-top: 5px; }
+        #log { font-size: 9px; color: #0ff; margin-top: 10px; height: 40px; overflow: hidden; }
     </style>
 </head>
 <body>
 
 <div id="ui">
-    <div style="font-weight: bold; border-bottom: 1px solid #0f0; padding-bottom: 5px;">SENTRY LIDAR v9.3</div>
-    
-    <button id="btnInit" class="btn">BOOT ENGINE</button>
+    <div style="font-weight: bold; border-bottom: 1px solid #0f0; padding-bottom: 5px;">SENTRY BRAIN v10.0</div>
+    <button id="btnInit" class="btn">BOOT BRAIN.JS</button>
     <button id="btnToggle" class="btn" style="display:none">START SCAN</button>
-    
-    <label class="control-label">DEPTH SENSITIVITY (KEYBOARD FOCUS)</label>
-    <input type="range" id="depthRange" min="5" max="25" value="12">
-    
-    <button id="btnClear" class="btn">RESET WORLD</button>
-    <div id="log">STANDBY...</div>
+    <button id="btnClear" class="btn">RESET MESH</button>
+    <div id="log">SYSTEM READY.</div>
+    <div id="stats" style="font-size: 10px; margin-top: 5px;">VOXELS: 0</div>
 </div>
 
-<div id="pip"><video id="v" autoplay playsinline muted></video></div>
+<div id="pip"><canvas id="c_process" style="display:none"></canvas><video id="v" autoplay playsinline muted></video></div>
 
 <script>
-    let scene, camera, renderer, estimator, stream;
+    let scene, camera, renderer, net, stream;
     let isScanning = false;
     let voxelMap = new Map();
     let instancedMesh;
-    const MAX_VOXELS = 70000;
-    const VOXEL_SIZE = 0.15; // Smaller voxels for better keyboard detail
-
-    const logBox = document.getElementById('log');
-    function status(msg) { logBox.innerHTML = `> ${msg}<br>${logBox.innerHTML}`; }
+    const MAX_VOXELS = 40000;
+    const VOXEL_SIZE = 0.2;
+    const RES = 32; // Resolution for brain.js processing
 
     async function init() {
-        document.getElementById('btnInit').innerText = "POWERING...";
-        try {
-            status("Checking WebGL...");
-            await tf.ready();
-            
-            status("Loading AI Model...");
-            // Bundled tfjs script includes converter, fixing the "loadGraphModel" error
-            estimator = await depthEstimation.createEstimator(
-                depthEstimation.SupportedModels.ARPortraitDepth
-            );
-            
-            status("Opening Optics...");
-            stream = await navigator.mediaDevices.getUserMedia({ 
-                video: { width: 256, height: 256, facingMode: "environment" } 
-            });
-            document.getElementById('v').srcObject = stream;
+        document.getElementById('btnInit').innerText = "TRAINING BRAIN...";
+        
+        // brain.js works best with simple numeric data
+        net = new brain.NeuralNetwork();
+        
+        // Simple training: Map luminance to approximate depth
+        // This acts as a placeholder for a complex depth model
+        net.train([
+            { input: { r: 0, g: 0, b: 0 }, output: { depth: 0 } },
+            { input: { r: 1, g: 1, b: 1 }, output: { depth: 1 } }
+        ]);
 
-            setup3D();
-            
-            document.getElementById('btnInit').style.display = "none";
-            document.getElementById('btnToggle').style.display = "block";
-            status("SYSTEM ONLINE.");
-            runLoop();
-        } catch (e) {
-            status("ERROR: " + e.message);
-            document.getElementById('btnInit').innerText = "RETRY BOOT";
-        }
+        stream = await navigator.mediaDevices.getUserMedia({ 
+            video: { width: 128, height: 128, facingMode: "environment" } 
+        });
+        document.getElementById('v').srcObject = stream;
+
+        setup3D();
+        document.getElementById('btnInit').style.display = "none";
+        document.getElementById('btnToggle').style.display = "block";
+        document.getElementById('log').innerText = "BRAIN ONLINE.";
+        runLoop();
     }
 
     function setup3D() {
         scene = new THREE.Scene();
         camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
         camera.position.set(0, 5, 10);
-
-        renderer = new THREE.WebGLRenderer({ antialias: false });
+        renderer = new THREE.WebGLRenderer();
         renderer.setSize(window.innerWidth, window.innerHeight);
         document.body.appendChild(renderer.domElement);
-
         new THREE.OrbitControls(camera, renderer.domElement);
         
-        const geometry = new THREE.BoxGeometry(VOXEL_SIZE, VOXEL_SIZE, VOXEL_SIZE);
-        const material = new THREE.MeshPhongMaterial({ color: 0x00ff00 });
-        instancedMesh = new THREE.InstancedMesh(geometry, material, MAX_VOXELS);
+        instancedMesh = new THREE.InstancedMesh(
+            new THREE.BoxGeometry(VOXEL_SIZE, VOXEL_SIZE, VOXEL_SIZE),
+            new THREE.MeshBasicMaterial({ color: 0x00ff00 }),
+            MAX_VOXELS
+        );
         scene.add(instancedMesh);
-        
-        scene.add(new THREE.AmbientLight(0x404040));
-        const light = new THREE.DirectionalLight(0xffffff, 1);
-        light.position.set(1, 1, 1);
-        scene.add(light);
+        scene.add(new THREE.GridHelper(20, 20, 0x004400, 0x001100));
     }
 
-    async function runLoop() {
+    function runLoop() {
         const video = document.getElementById('v');
         if (isScanning && video.readyState === 4) {
-            try {
-                const depthMap = await estimator.estimateDepth(video);
-                const depthValues = await depthMap.toArray();
-                const sensitivity = document.getElementById('depthRange').value;
+            const canvas = document.getElementById('c_process');
+            canvas.width = RES; canvas.height = RES;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(video, 0, 0, RES, RES);
+            const data = ctx.getImageData(0, 0, RES, RES).data;
+
+            const dummy = new THREE.Object3D();
+            for (let i = 0; i < data.length; i += 16) { // Downsampled for speed
+                const r = data[i]/255, g = data[i+1]/255, b = data[i+2]/255;
                 
-                const dummy = new THREE.Object3D();
-                const skip = 4; // Lower skip for higher density
+                // Use Brain.js to predict "depth" based on pixel luminance
+                const output = net.run({ r, g, b });
+                const depth = output.depth;
 
-                for (let y = 0; y < depthValues.length; y += skip) {
-                    for (let x = 0; x < depthValues[0].length; x += skip) {
-                        const depth = depthValues[y][x];
-                        if (depth < 0.1) continue; 
+                if (depth < 0.2) continue;
 
-                        // Convert screen space to world space
-                        const worldPos = new THREE.Vector3(
-                            (x/depthValues[0].length-0.5) * 12,
-                            (0.5-y/depthValues.length) * 12,
-                            depth * -sensitivity
-                        );
-                        worldPos.applyQuaternion(camera.quaternion);
-                        worldPos.add(camera.position);
+                const x = ((i/4) % RES - RES/2) * 0.4;
+                const y = (RES/2 - Math.floor((i/4) / RES)) * 0.4;
+                
+                const worldPos = new THREE.Vector3(x, y, depth * -10);
+                worldPos.applyQuaternion(camera.quaternion);
+                worldPos.add(camera.position);
 
-                        const gx = Math.round(worldPos.x/VOXEL_SIZE)*VOXEL_SIZE;
-                        const gy = Math.round(worldPos.y/VOXEL_SIZE)*VOXEL_SIZE;
-                        const gz = Math.round(worldPos.z/VOXEL_SIZE)*VOXEL_SIZE;
-                        const key = `${gx},${gy},${gz}`;
+                const gx = Math.round(worldPos.x/VOXEL_SIZE)*VOXEL_SIZE;
+                const gy = Math.round(worldPos.y/VOXEL_SIZE)*VOXEL_SIZE;
+                const gz = Math.round(worldPos.z/VOXEL_SIZE)*VOXEL_SIZE;
+                const key = `${gx},${gy},${gz}`;
 
-                        if (!voxelMap.has(key) && voxelMap.size < MAX_VOXELS) {
-                            voxelMap.set(key, true);
-                            dummy.position.set(gx, gy, gz);
-                            dummy.updateMatrix();
-                            instancedMesh.setMatrixAt(voxelMap.size - 1, dummy.matrix);
-                        }
-                    }
+                if (!voxelMap.has(key) && voxelMap.size < MAX_VOXELS) {
+                    voxelMap.set(key, true);
+                    dummy.position.set(gx, gy, gz);
+                    dummy.updateMatrix();
+                    instancedMesh.setMatrixAt(voxelMap.size - 1, dummy.matrix);
                 }
-                instancedMesh.instanceMatrix.needsUpdate = true;
-                depthMap.dispose(); 
-            } catch (err) { }
+            }
+            instancedMesh.instanceMatrix.needsUpdate = true;
+            document.getElementById('stats').innerText = `VOXELS: ${voxelMap.size}`;
         }
         renderer.render(scene, camera);
         requestAnimationFrame(runLoop);
@@ -150,14 +130,13 @@
 
     document.getElementById('btnToggle').onclick = function() {
         isScanning = !isScanning;
-        this.innerText = isScanning ? "PAUSE BUILDING" : "RESUME SCAN";
+        this.innerText = isScanning ? "STOP SCAN" : "RESUME SCAN";
         this.style.background = isScanning ? "#f00" : "#0f0";
     };
 
     document.getElementById('btnClear').onclick = () => {
         voxelMap.clear();
         instancedMesh.instanceMatrix.needsUpdate = true;
-        status("World Reset.");
     };
 
     document.getElementById('btnInit').onclick = init;
