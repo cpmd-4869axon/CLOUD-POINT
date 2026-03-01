@@ -3,16 +3,19 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Sentry Constructor v7.0</title>
+    <title>Sentry Constructor v8.0</title>
     
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-core"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-backend-webgl"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/depth-estimation"></script>
+    
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
 
     <style>
         body { margin: 0; background: #000; color: #0f0; font-family: 'Courier New', monospace; overflow: hidden; touch-action: none; }
         #ui { position: absolute; top: 10px; left: 10px; z-index: 100; background: rgba(0,20,0,0.9); padding: 12px; border: 1px solid #0f0; width: 220px; }
-        #pip { position: absolute; top: 10px; right: 10px; width: 100px; height: 100px; border: 1px solid #0f0; border-radius: 4px; overflow: hidden; }
+        #pip { position: absolute; top: 10px; right: 10px; width: 120px; height: 90px; border: 1px solid #0f0; background: #000; z-index: 101; }
         #v { width: 100%; height: 100%; object-fit: cover; }
         .btn-group { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
         button { padding: 10px; background: #0f0; color: #000; border: none; font-weight: bold; cursor: pointer; text-transform: uppercase; font-size: 10px; }
@@ -23,42 +26,40 @@
 <body>
 
 <div id="ui">
-    <div style="font-weight: bold;">SENTRY CONSTRUCTOR v7.0</div>
-    <div id="status" style="font-size: 10px;">SYSTEM: STANDBY</div>
+    <div style="font-weight: bold;">SENTRY LIDAR v8.0</div>
+    <div id="status" style="font-size: 10px;">SYSTEM: LOADING TF.JS</div>
     <div class="btn-group">
         <button id="btnInit">1. BOOT ENGINE</button>
-        <button id="btnToggle" disabled>2. START RECONSTRUCTION</button>
+        <button id="btnToggle" disabled>2. START SCAN</button>
         <button id="btnClear">3. RESET WORLD</button>
-        <button id="btnSave" disabled>4. EXPORT MESH</button>
     </div>
-    <div id="stats">VOXELS: 0</div>
+    <div id="stats">OBJECTS BUILT: 0</div>
 </div>
 
 <div id="pip"><video id="v" autoplay playsinline muted></video></div>
 
 <script>
-    let scene, camera, renderer, controls, selfieSegmentation;
+    let scene, camera, renderer, controls, estimator;
     let isScanning = false;
-    let voxelMap = new Map(); // Store permanent 3D points
+    let voxelMap = new Map();
     let instancedMesh;
-    const MAX_VOXELS = 60000;
-    const RES = 42; 
-    const VOXEL_SIZE = 0.25;
+    const MAX_VOXELS = 80000;
+    const RES = 40; // Resolution for voxel grid
+    const VOXEL_SIZE = 0.2;
 
     const v = document.getElementById('v');
     const stats = document.getElementById('stats');
 
     async function init() {
-        document.getElementById('btnInit').innerText = "CALIBRATING...";
+        document.getElementById('btnInit').innerText = "LOADING AI...";
         try {
-            selfieSegmentation = new SelfieSegmentation({
-                locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${file}`
-            });
-            selfieSegmentation.setOptions({ modelSelection: 1 });
-            selfieSegmentation.onResults(onResults);
+            await tf.setBackend('webgl');
+            // Using the Portrait Depth model for finer detail
+            const model = depthEstimation.SupportedModels.ARPortraitDepth;
+            estimator = await depthEstimation.createEstimator(model);
 
             const stream = await navigator.mediaDevices.getUserMedia({ 
-                video: { width: 128, height: 128, facingMode: "environment" } 
+                video: { width: 256, height: 256, facingMode: "environment" } 
             });
             v.srcObject = stream;
             
@@ -69,13 +70,16 @@
             document.getElementById('btnInit').style.display = "none";
             
             processFrame();
-        } catch (e) { console.error(e); }
+        } catch (e) { 
+            document.getElementById('status').innerText = "ERROR: CHECK CAMERA";
+            console.error(e); 
+        }
     }
 
     function setup3D() {
         scene = new THREE.Scene();
         camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
-        camera.position.set(10, 10, 20);
+        camera.position.set(5, 5, 10);
 
         renderer = new THREE.WebGLRenderer({ antialias: false });
         renderer.setSize(window.innerWidth, window.innerHeight);
@@ -84,71 +88,67 @@
         controls = new THREE.OrbitControls(camera, renderer.domElement);
         controls.enableDamping = true;
 
-        scene.add(new THREE.GridHelper(40, 40, 0x004400, 0x001100));
+        scene.add(new THREE.GridHelper(50, 50, 0x004400, 0x001100));
 
-        // Use InstancedMesh for performance (Drawing 60k cubes easily)
         const geometry = new THREE.BoxGeometry(VOXEL_SIZE, VOXEL_SIZE, VOXEL_SIZE);
-        const material = new THREE.MeshBasicMaterial({ color: 0x00ff00 });
+        const material = new THREE.MeshPhongMaterial({ color: 0x00ff00 });
         instancedMesh = new THREE.InstancedMesh(geometry, material, MAX_VOXELS);
-        instancedMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
         scene.add(instancedMesh);
+        
+        scene.add(new THREE.AmbientLight(0x404040));
+        const light = new THREE.DirectionalLight(0xffffff, 1);
+        light.position.set(1, 1, 1);
+        scene.add(light);
 
         loop();
     }
 
     async function processFrame() {
         if (isScanning && v.readyState === 4) {
-            await selfieSegmentation.send({image: v});
+            const depthMap = await estimator.estimateDepth(v);
+            const depthValues = await depthMap.toArray(); // Get per-pixel depth
+            updateWorld(depthValues);
         }
         requestAnimationFrame(processFrame);
     }
 
-    function onResults(results) {
-        if (!results.segmentationMask || !isScanning) return;
-        
-        const mask = results.segmentationMask;
-        const canvas = document.createElement('canvas');
-        canvas.width = RES; canvas.height = RES;
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(mask, 0, 0, RES, RES);
-        const data = ctx.getImageData(0, 0, RES, RES).data;
-        
+    function updateWorld(depthValues) {
         const dummy = new THREE.Object3D();
-        const spread = 0.4;
+        const rows = depthValues.length;
+        const cols = depthValues[0].length;
+        const skip = Math.floor(rows / RES);
 
-        for (let i = 0; i < RES * RES; i += 2) {
-            const depth = data[i * 4] / 255;
-            if (depth < 0.2) continue; 
+        for (let y = 0; y < rows; y += skip) {
+            for (let x = 0; x < cols; x += skip) {
+                const depth = depthValues[y][x]; // Normalized depth value
+                if (depth < 0.1) continue; 
 
-            // Calculate Local Position
-            const lx = ((i % RES) - RES/2) * spread;
-            const ly = (RES/2 - Math.floor(i / RES)) * spread;
-            const lz = depth * -18;
+                // World Projection with Camera Orientation
+                const worldPos = new THREE.Vector3(
+                    (x / cols - 0.5) * 15,
+                    (0.5 - y / rows) * 15,
+                    depth * -12
+                );
+                worldPos.applyQuaternion(camera.quaternion);
+                worldPos.add(camera.position);
 
-            // Project into World Space (The Building Effect)
-            const worldPos = new THREE.Vector3(lx, ly, lz);
-            worldPos.applyQuaternion(camera.quaternion);
-            worldPos.add(camera.position);
+                // Quantize to construct a solid mesh grid
+                const gx = Math.round(worldPos.x / VOXEL_SIZE) * VOXEL_SIZE;
+                const gy = Math.round(worldPos.y / VOXEL_SIZE) * VOXEL_SIZE;
+                const gz = Math.round(worldPos.z / VOXEL_SIZE) * VOXEL_SIZE;
+                const key = `${gx},${gy},${gz}`;
 
-            // Quantize to Grid (Snap to 0.25 units)
-            const gx = Math.round(worldPos.x / VOXEL_SIZE) * VOXEL_SIZE;
-            const gy = Math.round(worldPos.y / VOXEL_SIZE) * VOXEL_SIZE;
-            const gz = Math.round(worldPos.z / VOXEL_SIZE) * VOXEL_SIZE;
-            const key = `${gx},${gy},${gz}`;
-
-            if (!voxelMap.has(key) && voxelMap.size < MAX_VOXELS) {
-                voxelMap.set(key, {x: gx, y: gy, z: gz});
-                
-                // Update Instanced Mesh
-                const idx = voxelMap.size - 1;
-                dummy.position.set(gx, gy, gz);
-                dummy.updateMatrix();
-                instancedMesh.setMatrixAt(idx, dummy.matrix);
+                if (!voxelMap.has(key) && voxelMap.size < MAX_VOXELS) {
+                    voxelMap.set(key, true);
+                    const idx = voxelMap.size - 1;
+                    dummy.position.set(gx, gy, gz);
+                    dummy.updateMatrix();
+                    instancedMesh.setMatrixAt(idx, dummy.matrix);
+                }
             }
         }
         instancedMesh.instanceMatrix.needsUpdate = true;
-        stats.innerText = `VOXELS: ${voxelMap.size} / ${MAX_VOXELS}`;
-        document.getElementById('btnSave').disabled = false;
+        stats.innerText = `OBJECTS BUILT: ${voxelMap.size}`;
     }
 
     function loop() {
@@ -159,26 +159,14 @@
 
     document.getElementById('btnToggle').onclick = function() {
         isScanning = !isScanning;
-        this.innerText = isScanning ? "PAUSE BUILDING" : "RESUME BUILDING";
+        this.innerText = isScanning ? "STOP BUILDING" : "RESUME BUILDING";
         this.className = isScanning ? "active" : "";
-        document.getElementById('status').innerText = isScanning ? "SYSTEM: CONSTRUCTING" : "SYSTEM: PAUSED";
     };
 
     document.getElementById('btnClear').onclick = () => {
         voxelMap.clear();
         instancedMesh.instanceMatrix.needsUpdate = true;
-        stats.innerText = "VOXELS: 0";
-    };
-
-    document.getElementById('btnSave').onclick = () => {
-        let out = "# SENTRY MESH EXPORT\n";
-        voxelMap.forEach(v => {
-            out += `${v.x.toFixed(3)} ${v.y.toFixed(3)} ${v.z.toFixed(3)}\n`;
-        });
-        const a = document.createElement('a');
-        a.href = URL.createObjectURL(new Blob([out], {type: 'text/plain'}));
-        a.download = `constructed_world.xyz`;
-        a.click();
+        stats.innerText = "OBJECTS BUILT: 0";
     };
 
     document.getElementById('btnInit').onclick = init;
