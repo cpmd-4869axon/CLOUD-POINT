@@ -1,105 +1,150 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Sentry Cloud Mapper</title>
+    <title>Sentry Cloud Mapper v3</title>
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.15.0"></script>
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/depth-estimation@0.0.4"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
     <style>
         body { margin: 0; background: #000; color: #0f0; font-family: 'Courier New', monospace; overflow: hidden; }
-        #overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; flex-direction: column; justify-content: center; align-items: center; z-index: 100; background: rgba(0,0,0,0.9); }
-        #ui-trace { position: absolute; bottom: 20px; left: 20px; font-size: 12px; pointer-events: none; }
-        button { padding: 20px 40px; background: #0f0; color: #000; border: none; font-weight: bold; cursor: pointer; border-radius: 4px; }
+        #ui-layer { position: absolute; top: 10px; left: 10px; z-index: 100; background: rgba(0,0,0,0.9); padding: 15px; border: 1px solid #0f0; width: 240px; }
+        .btn-group { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+        button { padding: 12px; background: #0f0; color: #000; border: none; font-weight: bold; cursor: pointer; }
+        button:disabled { background: #030; color: #060; }
+        #gps-data { font-size: 11px; margin-top: 5px; color: #888; }
     </style>
 </head>
 <body>
 
-<div id="overlay">
-    <h2 id="msg">INITIALIZING SYSTEM...</h2>
-    <button id="gatekeeper" style="display:none;">INITIALIZE CAMERA & SENSORS</button>
-</div>
-
-<div id="ui-trace">
-    <div id="stat-gpu">GPU: PENDING</div>
-    <div id="stat-gps">GPS: PENDING</div>
+<div id="ui-layer">
+    <div style="font-size: 14px;">STATUS: <span id="sys-state">OFFLINE</span></div>
+    <div id="gps-data">GPS: ACQUIRING...</div>
+    <div class="btn-group">
+        <button id="initBtn">INITIALIZE SYSTEM</button>
+        <button id="toggleBtn" disabled>START SCAN</button>
+        <button id="saveBtn" disabled>EXPORT .XYZ</button>
+    </div>
+    <div style="font-size: 10px; margin-top: 10px; color: #0f0;">* Use 1 finger to rotate, 2 to zoom</div>
 </div>
 
 <video id="v" autoplay playsinline muted style="display:none"></video>
 
 <script>
-    let scene, camera, renderer, points, estimator;
-    const v = document.getElementById('v');
-    const btn = document.getElementById('gatekeeper');
-    const msg = document.getElementById('msg');
+    let scene, camera, renderer, points, estimator, controls;
+    let isScanning = false;
+    let lastCloudData = null;
+    let currentGPS = "Unknown";
 
-    async function setupTF() {
+    const v = document.getElementById('v');
+    const initBtn = document.getElementById('initBtn');
+    const toggleBtn = document.getElementById('toggleBtn');
+    const saveBtn = document.getElementById('saveBtn');
+
+    async function init() {
+        initBtn.innerText = "LOADING ENGINE...";
         try {
             await tf.setBackend('webgl');
             await tf.ready();
-            document.getElementById('stat-gpu').innerText = "GPU: " + tf.getBackend().toUpperCase();
-            
             estimator = await depthEstimation.createEstimator(depthEstimation.SupportedModels.ARPortraitDepth);
-            msg.innerText = "HARDWARE READY";
-            btn.style.display = "block";
+            
+            const stream = await navigator.mediaDevices.getUserMedia({ 
+                video: { width: 256, height: 256, facingMode: "environment" } 
+            });
+            v.srcObject = stream;
+            await v.play();
+
+            setupThree();
+            startGPS();
+
+            document.getElementById('sys-state').innerText = "ONLINE";
+            initBtn.disabled = true;
+            toggleBtn.disabled = false;
+            initBtn.innerText = "HARDWARE READY";
         } catch (e) {
-            msg.innerText = "ERROR: " + e.message;
+            alert("Error: check HTTPS/Permissions");
         }
     }
 
-    async function boot() {
-        document.getElementById('overlay').style.display = "none";
-        
-        // 1. Start Camera
-        const stream = await navigator.mediaDevices.getUserMedia({ 
-            video: { width: 256, height: 256, facingMode: "environment" } 
-        });
-        v.srcObject = stream;
-        await v.play();
-
-        // 2. Start GPS
-        navigator.geolocation.watchPosition(p => {
-            document.getElementById('stat-gps').innerText = `GPS: ${p.coords.latitude.toFixed(4)}, ${p.coords.longitude.toFixed(4)}`;
-        });
-
-        // 3. Three.js Setup
+    function setupThree() {
         scene = new THREE.Scene();
         camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
-        camera.position.z = 8;
-        renderer = new THREE.WebGLRenderer();
+        camera.position.set(0, 0, 12);
+
+        renderer = new THREE.WebGLRenderer({ antialias: false });
         renderer.setSize(window.innerWidth, window.innerHeight);
         document.body.appendChild(renderer.domElement);
+
+        // Add OrbitControls for 360 degree inspection
+        controls = new THREE.OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
 
         const geo = new THREE.BufferGeometry();
         const pos = new Float32Array(256 * 256 * 3);
         geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-        points = new THREE.Points(geo, new THREE.PointsMaterial({ size: 0.05, color: 0x00ff00 }));
+        points = new THREE.Points(geo, new THREE.PointsMaterial({ size: 0.04, color: 0x00ff00 }));
         scene.add(points);
 
-        loop();
+        animate();
     }
 
-    async function loop() {
-        if (v.readyState === 4) {
-            const depth = await estimator.estimateDepth(v);
-            const data = await depth.toArray();
-            const attr = points.geometry.attributes.position.array;
-            
-            let i = 0;
-            for(let y=0; y<256; y++) {
-                for(let x=0; x<256; x++) {
-                    attr[i++] = (x - 128) * 0.05;
-                    attr[i++] = (128 - y) * 0.05;
-                    attr[i++] = data[y][x] * -10;
-                }
+    function startGPS() {
+        navigator.geolocation.watchPosition(p => {
+            currentGPS = `${p.coords.latitude.toFixed(6)}, ${p.coords.longitude.toFixed(6)}`;
+            document.getElementById('gps-data').innerText = `GPS: ${currentGPS}`;
+        }, null, {enableHighAccuracy: true});
+    }
+
+    async function updateData() {
+        if (!isScanning || v.readyState !== 4) return;
+
+        const depth = await estimator.estimateDepth(v);
+        lastCloudData = await depth.toArray();
+        const attr = points.geometry.attributes.position.array;
+        
+        let i = 0;
+        for(let y=0; y<256; y++) {
+            for(let x=0; x<256; x++) {
+                const z = lastCloudData[y][x];
+                attr[i++] = (x - 128) * 0.06; // X
+                attr[i++] = (128 - y) * 0.06; // Y
+                attr[i++] = z * -12;          // Z (Depth)
             }
-            points.geometry.attributes.position.needsUpdate = true;
         }
-        renderer.render(scene, camera);
-        requestAnimationFrame(loop);
+        points.geometry.attributes.position.needsUpdate = true;
+        saveBtn.disabled = false;
     }
 
-    btn.onclick = boot;
-    window.onload = setupTF;
+    function animate() {
+        updateData();
+        controls.update();
+        renderer.render(scene, camera);
+        requestAnimationFrame(animate);
+    }
+
+    toggleBtn.onclick = () => {
+        isScanning = !isScanning;
+        toggleBtn.innerText = isScanning ? "PAUSE & INSPECT" : "RESUME SCANNING";
+        document.getElementById('sys-state').innerText = isScanning ? "SCANNING" : "PAUSED";
+        toggleBtn.style.background = isScanning ? "#f00" : "#0f0";
+    };
+
+    saveBtn.onclick = () => {
+        if (!lastCloudData) return;
+        let csv = `# Sentry Cloud Export\n# Location: ${currentGPS}\n# Format: X Y Z\n`;
+        for(let y=0; y<256; y++) {
+            for(let x=0; x<256; x++) {
+                const z = lastCloudData[y][x] * -12;
+                csv += `${((x-128)*0.06).toFixed(3)} ${((128-y)*0.06).toFixed(3)} ${z.toFixed(3)}\n`;
+            }
+        }
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(new Blob([csv], {type:'text/plain'}));
+        link.download = `sentry_scan_${Date.now()}.xyz`;
+        link.click();
+    };
+
+    initBtn.onclick = init;
 </script>
 </body>
 </html>
