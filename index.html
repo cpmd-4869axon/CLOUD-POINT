@@ -3,77 +3,95 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Sentry Constructor v9.0</title>
+    <title>Sentry Constructor v9.1</title>
     
-    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-core"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-backend-webgl"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/depth-estimation"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-core@4.17.0"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-backend-webgl@4.17.0"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/depth-estimation@0.0.4"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
 
     <style>
-        body { margin: 0; background: #000; color: #0f0; font-family: 'Courier New', monospace; overflow: hidden; touch-action: none; }
-        #ui { position: absolute; top: 10px; left: 10px; z-index: 100; background: rgba(0,20,0,0.9); padding: 12px; border: 1px solid #0f0; width: 220px; }
-        #pip { position: absolute; top: 10px; right: 10px; width: 100px; height: 75px; border: 1px solid #0f0; background: #000; z-index: 101; }
+        body { margin: 0; background: #000; color: #0f0; font-family: 'Courier New', monospace; overflow: hidden; }
+        #ui { position: absolute; top: 10px; left: 10px; z-index: 100; background: rgba(0,15,0,0.9); padding: 12px; border: 1px solid #0f0; width: 240px; }
+        #pip { position: absolute; top: 10px; right: 10px; width: 120px; height: 90px; border: 1px solid #0f0; background: #111; z-index: 101; }
         #v { width: 100%; height: 100%; object-fit: cover; }
         .btn-group { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
-        button { padding: 10px; background: #0f0; color: #000; border: none; font-weight: bold; cursor: pointer; text-transform: uppercase; font-size: 10px; }
-        .stop-btn { background: #f00 !important; color: #fff; margin-top: 10px; border: 2px solid #fff; }
-        .active { border: 2px solid #fff; box-shadow: 0 0 10px #0f0; }
-        #stats { font-size: 9px; color: #0ff; margin-top: 10px; }
+        button { padding: 12px; background: #0f0; color: #000; border: none; font-weight: bold; cursor: pointer; text-transform: uppercase; font-size: 11px; }
+        button:disabled { background: #030; color: #060; cursor: wait; }
+        #status { font-size: 10px; color: #0ff; margin-bottom: 5px; }
+        .terminal-text { font-size: 9px; color: #aaa; margin-top: 10px; height: 40px; overflow: hidden; }
     </style>
 </head>
 <body>
 
 <div id="ui">
-    <div style="font-weight: bold;">SENTRY LIDAR v9.0</div>
-    <div id="status" style="font-size: 10px;">SYSTEM: OFFLINE</div>
+    <div style="font-weight: bold; border-bottom: 1px solid #0f0; padding-bottom: 5px; margin-bottom: 10px;">SENTRY LIDAR v9.1</div>
+    <div id="status">STATUS: STANDBY</div>
     
     <div class="btn-group">
-        <button id="btnInit">BOOT ENGINE</button>
+        <button id="btnInit">BOOT AI CORE</button>
         <button id="btnToggle" disabled>START SCAN</button>
-        <button id="btnClear">RESET WORLD</button>
-        <button id="btnStop" class="stop-btn" style="display:none">STOP & TERMINATE</button>
+        <button id="btnClear">RESET MESH</button>
     </div>
-    <div id="stats">VOXELS: 0</div>
+    
+    <div id="stats" style="font-size: 10px; margin-top: 10px;">VOXELS: 0</div>
+    <div id="terminal" class="terminal-text">Ready for initialization...</div>
 </div>
 
 <div id="pip"><video id="v" autoplay playsinline muted></video></div>
 
 <script>
-    let scene, camera, renderer, controls, estimator, stream;
+    let scene, camera, renderer, estimator, stream;
     let isScanning = false;
     let voxelMap = new Map();
     let instancedMesh;
-    let animationId;
-    const MAX_VOXELS = 80000;
+    const MAX_VOXELS = 60000;
     const VOXEL_SIZE = 0.2;
 
     const v = document.getElementById('v');
-    const stats = document.getElementById('stats');
+    const term = document.getElementById('terminal');
+
+    function log(msg) {
+        term.innerHTML = `> ${msg}<br>${term.innerHTML}`;
+        console.log(msg);
+    }
 
     async function init() {
-        document.getElementById('btnInit').innerText = "POWERING UP...";
+        const btn = document.getElementById('btnInit');
+        btn.disabled = true;
+        btn.innerText = "POWERING...";
+        
         try {
-            await tf.setBackend('webgl');
+            log("Initializing TensorFlow...");
+            await tf.ready();
+            log("WebGL Backend: " + tf.getBackend());
+            
+            log("Loading Depth Model...");
             const model = depthEstimation.SupportedModels.ARPortraitDepth;
             estimator = await depthEstimation.createEstimator(model);
+            log("Model Loaded Successfully.");
 
+            log("Requesting Camera...");
             stream = await navigator.mediaDevices.getUserMedia({ 
-                video: { width: 256, height: 256, facingMode: "environment" } 
+                video: { width: {ideal: 256}, height: {ideal: 256}, facingMode: "environment" } 
             });
             v.srcObject = stream;
             
+            await v.play();
+            log("Camera stream active.");
+
             setup3D();
             
-            document.getElementById('status').innerText = "SYSTEM: READY";
+            document.getElementById('status').innerText = "STATUS: ONLINE";
             document.getElementById('btnToggle').disabled = false;
-            document.getElementById('btnStop').style.display = "block";
-            document.getElementById('btnInit').style.display = "none";
+            btn.style.display = "none";
             
             runLoop();
-        } catch (e) { 
-            alert("Camera access required for LiDAR mapping.");
+        } catch (e) {
+            log("BOOT ERROR: " + e.message);
+            btn.disabled = false;
+            btn.innerText = "RETRY BOOT";
         }
     }
 
@@ -86,7 +104,7 @@
         renderer.setSize(window.innerWidth, window.innerHeight);
         document.body.appendChild(renderer.domElement);
 
-        controls = new THREE.OrbitControls(camera, renderer.domElement);
+        new THREE.OrbitControls(camera, renderer.domElement);
         
         const geometry = new THREE.BoxGeometry(VOXEL_SIZE, VOXEL_SIZE, VOXEL_SIZE);
         const material = new THREE.MeshPhongMaterial({ color: 0x00ff00 });
@@ -97,88 +115,67 @@
         const light = new THREE.DirectionalLight(0xffffff, 1);
         light.position.set(1, 1, 1);
         scene.add(light);
+        log("3D Scene initialized.");
     }
 
     async function runLoop() {
         if (isScanning && v.readyState === 4) {
-            const depthMap = await estimator.estimateDepth(v);
-            const depthValues = await depthMap.toArray();
-            
-            const dummy = new THREE.Object3D();
-            const rows = depthValues.length;
-            const cols = depthValues[0].length;
-            const skip = 4;
+            try {
+                const depthMap = await estimator.estimateDepth(v);
+                const depthValues = await depthMap.toArray();
+                
+                const dummy = new THREE.Object3D();
+                const rows = depthValues.length;
+                const cols = depthValues[0].length;
+                const skip = 5; // Higher skip = faster performance
 
-            for (let y = 0; y < rows; y += skip) {
-                for (let x = 0; x < cols; x += skip) {
-                    const depth = depthValues[y][x];
-                    if (depth < 0.15) continue; 
+                for (let y = 0; y < rows; y += skip) {
+                    for (let x = 0; x < cols; x += skip) {
+                        const depth = depthValues[y][x];
+                        if (depth < 0.2) continue; 
 
-                    const worldPos = new THREE.Vector3((x/cols-0.5)*15, (0.5-y/rows)*15, depth*-12);
-                    worldPos.applyQuaternion(camera.quaternion);
-                    worldPos.add(camera.position);
+                        const worldPos = new THREE.Vector3((x/cols-0.5)*15, (0.5-y/rows)*15, depth*-12);
+                        worldPos.applyQuaternion(camera.quaternion);
+                        worldPos.add(camera.position);
 
-                    const gx = Math.round(worldPos.x/VOXEL_SIZE)*VOXEL_SIZE;
-                    const gy = Math.round(worldPos.y/VOXEL_SIZE)*VOXEL_SIZE;
-                    const gz = Math.round(worldPos.z/VOXEL_SIZE)*VOXEL_SIZE;
-                    const key = `${gx},${gy},${gz}`;
+                        const gx = Math.round(worldPos.x/VOXEL_SIZE)*VOXEL_SIZE;
+                        const gy = Math.round(worldPos.y/VOXEL_SIZE)*VOXEL_SIZE;
+                        const gz = Math.round(worldPos.z/VOXEL_SIZE)*VOXEL_SIZE;
+                        const key = `${gx},${gy},${gz}`;
 
-                    if (!voxelMap.has(key) && voxelMap.size < MAX_VOXELS) {
-                        voxelMap.set(key, true);
-                        dummy.position.set(gx, gy, gz);
-                        dummy.updateMatrix();
-                        instancedMesh.setMatrixAt(voxelMap.size - 1, dummy.matrix);
+                        if (!voxelMap.has(key) && voxelMap.size < MAX_VOXELS) {
+                            voxelMap.set(key, true);
+                            dummy.position.set(gx, gy, gz);
+                            dummy.updateMatrix();
+                            instancedMesh.setMatrixAt(voxelMap.size - 1, dummy.matrix);
+                        }
                     }
                 }
+                instancedMesh.instanceMatrix.needsUpdate = true;
+                document.getElementById('stats').innerText = `VOXELS: ${voxelMap.size}`;
+                depthMap.dispose(); 
+            } catch (err) {
+                console.warn("Frame processing skipped.");
             }
-            instancedMesh.instanceMatrix.needsUpdate = true;
-            stats.innerText = `VOXELS: ${voxelMap.size}`;
-            
-            // Explicitly dispose of the depthMap tensor to save memory
-            depthMap.dispose(); 
         }
         
-        controls.update();
         renderer.render(scene, camera);
-        animationId = requestAnimationFrame(runLoop);
-    }
-
-    // TERMINATE FUNCTION
-    function terminate() {
-        isScanning = false;
-        cancelAnimationFrame(animationId);
-        
-        // 1. Stop Camera
-        if (stream) {
-            stream.getTracks().forEach(track => track.stop());
-        }
-        
-        // 2. Clear Scene
-        scene.remove(instancedMesh);
-        instancedMesh.geometry.dispose();
-        instancedMesh.material.dispose();
-        
-        // 3. Reset UI
-        document.getElementById('status').innerText = "SYSTEM: TERMINATED";
-        document.getElementById('btnToggle').disabled = true;
-        document.getElementById('btnStop').style.display = "none";
-        document.getElementById('btnInit').style.display = "block";
-        document.getElementById('btnInit').innerText = "REBOOT SYSTEM";
-        
-        alert("System Cleaned. RAM Freed.");
+        requestAnimationFrame(runLoop);
     }
 
     document.getElementById('btnToggle').onclick = function() {
         isScanning = !isScanning;
         this.innerText = isScanning ? "PAUSE SCAN" : "RESUME SCAN";
-        this.classList.toggle('active');
+        document.getElementById('status').innerText = isScanning ? "STATUS: SCANNING" : "STATUS: PAUSED";
     };
 
-    document.getElementById('btnStop').onclick = terminate;
     document.getElementById('btnClear').onclick = () => {
         voxelMap.clear();
         instancedMesh.instanceMatrix.needsUpdate = true;
+        document.getElementById('stats').innerText = "VOXELS: 0";
+        log("Mesh cleared.");
     };
+
     document.getElementById('btnInit').onclick = init;
 </script>
 </body>
