@@ -8,100 +8,100 @@
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/depth-estimation"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <style>
-        body { margin: 0; overflow: hidden; background: #000; font-family: sans-serif; }
-        #ui { position: absolute; top: 10px; left: 10px; color: white; z-index: 10; background: rgba(0,0,0,0.5); padding: 10px; border-radius: 8px; }
+        body { margin: 0; overflow: hidden; background: #000; font-family: monospace; }
+        #ui { position: absolute; top: 10px; left: 10px; color: #0f0; z-index: 10; background: rgba(0,0,0,0.8); padding: 10px; border: 1px solid #0f0; }
         #video { display: none; }
-        canvas { display: block; }
+        button { background: #0f0; color: #000; border: none; padding: 5px 10px; cursor: pointer; font-weight: bold; }
     </style>
 </head>
 <body>
 
 <div id="ui">
-    <div id="status">Loading Models...</div>
-    <div id="gps">GPS: Acquiring...</div>
-    <button onclick="toggleCapture()">Start/Stop Camera</button>
+    <div id="status">INITIALIZING TF.JS...</div>
+    <div id="gps">GPS: PENDING...</div>
+    <button id="startBtn">ACTIVATE SCANNER</button>
 </div>
 
-<video id="video" autoplay playsinline></video>
+<video id="video" autoplay playsinline muted></video>
 
 <script>
     let scene, camera, renderer, points, estimator;
-    let video = document.getElementById('video');
-    const width = 640, height = 480;
+    const video = document.getElementById('video');
+    const width = 256, height = 256; // Reduced resolution for mobile performance
 
     async function init() {
-        // 1. Setup Three.js
+        // Force WebGL Backend for performance
+        await tf.setBackend('webgl');
+        await tf.ready();
+        
+        // Setup Three.js
         scene = new THREE.Scene();
         camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-        camera.position.z = 5;
+        camera.position.set(0, 0, 10);
 
-        renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer = new THREE.WebGLRenderer({ antialias: false });
         renderer.setSize(window.innerWidth, window.innerHeight);
         document.body.appendChild(renderer.domElement);
 
-        // Create Point Cloud Geometry
-        const numPoints = width * height;
+        // Point Cloud Geometry
         const geometry = new THREE.BufferGeometry();
-        const positions = new Float32Array(numPoints * 3);
+        const positions = new Float32Array(width * height * 3);
         geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-        
-        const material = new THREE.PointsMaterial({ size: 0.02, color: 0x00ffcc });
+        const material = new THREE.PointsMaterial({ size: 0.05, color: 0x00ff00 });
         points = new THREE.Points(geometry, material);
         scene.add(points);
 
-        // 2. Setup TF.js Depth Estimation
-        const model = depthEstimation.SupportedModels.ARPortraitDepth;
-        estimator = await depthEstimation.createEstimator(model);
-        document.getElementById('status').innerText = "Model Ready";
+        // Load Depth Model
+        document.getElementById('status').innerText = "DOWNLOADING MODEL...";
+        estimator = await depthEstimation.createEstimator(depthEstimation.SupportedModels.ARPortraitDepth);
+        document.getElementById('status').innerText = "SYSTEM READY";
 
-        // 3. Setup GPS
-        if ("geolocation" in navigator) {
-            navigator.geolocation.watchPosition(pos => {
-                document.getElementById('gps').innerText = 
-                    `LAT: ${pos.coords.latitude.toFixed(4)} LON: ${pos.coords.longitude.toFixed(4)}`;
-            });
-        }
-
-        animate();
-    }
-
-    async function setupCamera() {
-        const stream = await navigator.mediaDevices.getUserMedia({ 
-            video: { width: width, height: height, facingMode: "environment" } 
-        });
-        video.srcObject = stream;
-        return new Promise(resolve => video.onloadedmetadata = resolve);
-    }
-
-    async function updatePoints() {
-        if (!estimator || video.readyState < 2) return;
-
-        const depthMap = await estimator.estimateDepth(video);
-        const depthData = await depthMap.toArray(); // Array of depth values
+        document.getElementById('startBtn').addEventListener('click', startSystem);
         
-        const positions = points.geometry.attributes.position.array;
-        let ptr = 0;
-
-        for (let y = 0; y < height; y++) {
-            for (let x = 0; x < width; x++) {
-                const z = depthData[y][x] * -5; // Scale depth
-                positions[ptr++] = (x / width - 0.5) * 10; 
-                positions[ptr++] = (0.5 - y / height) * 10;
-                positions[ptr++] = z;
-            }
+        // GPS Tracker
+        if (navigator.geolocation) {
+            navigator.geolocation.watchPosition(p => {
+                document.getElementById('gps').innerText = `LAT: ${p.coords.latitude.toFixed(5)} LON: ${p.coords.longitude.toFixed(5)}`;
+            }, null, { enableHighAccuracy: true });
         }
-        points.geometry.attributes.position.needsUpdate = true;
     }
 
-    function animate() {
+    async function startSystem() {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ 
+                video: { width: width, height: height, facingMode: "environment" } 
+            });
+            video.srcObject = stream;
+            video.onloadedmetadata = () => {
+                video.play();
+                document.getElementById('status').innerText = "SCANNING...";
+                animate();
+            };
+        } catch (e) {
+            alert("Camera Access Denied: Check HTTPS/Permissions");
+        }
+    }
+
+    async function animate() {
         requestAnimationFrame(animate);
-        updatePoints();
+        
+        if (estimator && video.readyState === 4) {
+            const result = await estimator.estimateDepth(video);
+            const depthArray = await result.toArray();
+            const posAttr = points.geometry.attributes.position.array;
+            
+            let i = 0;
+            for (let y = 0; y < height; y++) {
+                for (let x = 0; x < width; x++) {
+                    const z = depthArray[y][x];
+                    posAttr[i++] = (x - width / 2) * 0.05;
+                    posAttr[i++] = (height / 2 - y) * 0.05;
+                    posAttr[i++] = z * -10; // Depth scaling
+                }
+            }
+            points.geometry.attributes.position.needsUpdate = true;
+        }
         renderer.render(scene, camera);
-    }
-
-    async function toggleCapture() {
-        await setupCamera();
-        video.play();
     }
 
     window.onload = init;
