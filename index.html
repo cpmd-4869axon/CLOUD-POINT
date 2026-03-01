@@ -3,21 +3,20 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Sentry Depth Mapper v3.3.1</title>
+    <title>Sentry Depth Mapper v4.0</title>
     
-    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.15.0"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/depth-estimation@0.0.4"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
 
     <style>
         body { margin: 0; background: #000; color: #0f0; font-family: 'Courier New', monospace; overflow: hidden; touch-action: none; }
-        #ui { position: absolute; top: 10px; left: 10px; z-index: 100; background: rgba(0,0,0,0.9); padding: 15px; border: 1px solid #0f0; width: 260px; pointer-events: auto; }
+        #ui { position: absolute; top: 10px; left: 10px; z-index: 100; background: rgba(0,0,0,0.9); padding: 15px; border: 1px solid #0f0; width: 260px; }
         .btn-group { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
         button { padding: 12px; background: #0f0; color: #000; border: none; font-weight: bold; cursor: pointer; text-transform: uppercase; }
         button:disabled { background: #030; color: #060; cursor: not-allowed; }
-        #log { color: #f44; font-size: 10px; margin-top: 10px; word-wrap: break-word; font-family: monospace; }
+        #log { color: #f44; font-size: 10px; margin-top: 10px; word-wrap: break-word; }
+        #gps { font-size: 11px; color: #888; margin-top: 5px; }
         canvas { display: block; }
     </style>
 </head>
@@ -26,7 +25,7 @@
 <div id="ui">
     <div style="font-weight: bold; letter-spacing: 2px;">SENTRY DEPTH ENGINE</div>
     <div id="status" style="font-size: 12px; margin-top: 5px;">STATUS: OFFLINE</div>
-    <div id="gps" style="font-size: 11px; color: #888;">GPS: PENDING...</div>
+    <div id="gps">GPS: PENDING...</div>
     
     <div class="btn-group">
         <button id="btnInit">1. BOOT ENGINE</button>
@@ -39,51 +38,35 @@
 <video id="v" autoplay playsinline muted style="display:none"></video>
 
 <script>
-    let scene, camera, renderer, points, estimator, controls;
+    let scene, camera, renderer, points, controls, selfieSegmentation;
     let isScanning = false;
     let lastDepthData = null;
     let coords = "0.0, 0.0";
-    const RES = 128; 
+    const RES = 128; // Resolution for mobile performance
 
     const v = document.getElementById('v');
     const log = document.getElementById('log');
 
     async function init() {
         const bootBtn = document.getElementById('btnInit');
-        bootBtn.innerText = "LOADING ENGINE...";
+        bootBtn.innerText = "LOADING CORE...";
         bootBtn.disabled = true;
-        log.innerText = "";
         
         try {
-            // 1. Initialize TFJS WebGL Backend
-            await tf.setBackend('webgl');
-            await tf.ready();
-            
-            // 2. Setup Estimator
-            // We use the ARPortraitDepth model which relies on MediaPipe
-            const model = depthEstimation.SupportedModels.ARPortraitDepth;
-            estimator = await depthEstimation.createEstimator(model, {
-                runtime: 'mediapipe',
-                solutionPath: 'https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation'
+            // 1. Initialize MediaPipe Selfie Segmentation
+            selfieSegmentation = new SelfieSegmentation({
+                locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${file}`
             });
-            
-            // 3. Setup Camera
+
+            selfieSegmentation.setOptions({ modelSelection: 1 }); // 1 = Landscape/General depth
+            selfieSegmentation.onResults(onResults);
+
+            // 2. Setup Camera
             const stream = await navigator.mediaDevices.getUserMedia({ 
-                video: { 
-                    width: { ideal: RES }, 
-                    height: { ideal: RES }, 
-                    facingMode: "environment" 
-                } 
+                video: { width: {ideal: RES}, height: {ideal: RES}, facingMode: "environment" } 
             });
             v.srcObject = stream;
-            
-            // Wait for video to be ready
-            await new Promise((resolve) => {
-                v.onloadedmetadata = () => {
-                    v.play();
-                    resolve();
-                };
-            });
+            await v.play();
 
             setup3D();
             startGPS();
@@ -91,17 +74,17 @@
             document.getElementById('status').innerText = "STATUS: ONLINE";
             document.getElementById('btnToggle').disabled = false;
             bootBtn.innerText = "ENGINE READY";
+            
+            // Start the processing loop
+            processFrame();
         } catch (e) {
             bootBtn.disabled = false;
             bootBtn.innerText = "RETRY BOOT";
             log.innerText = "CRITICAL: " + e.message;
-            console.error(e);
         }
     }
 
     function setup3D() {
-        if (renderer) return; // Prevent double init
-
         scene = new THREE.Scene();
         camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
         camera.position.set(0, 0, 20);
@@ -117,17 +100,61 @@
         const positions = new Float32Array(RES * RES * 3);
         geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
         
-        const mat = new THREE.PointsMaterial({ size: 0.15, color: 0x00ff00 });
+        // Green point cloud material
+        const mat = new THREE.PointsMaterial({ size: 0.12, color: 0x00ff00 });
         points = new THREE.Points(geo, mat);
         scene.add(points);
 
-        window.addEventListener('resize', () => {
-            camera.aspect = window.innerWidth / window.innerHeight;
-            camera.updateProjectionMatrix();
-            renderer.setSize(window.innerWidth, window.innerHeight);
-        });
-
         loop();
+    }
+
+    async function processFrame() {
+        if (isScanning && v.readyState === 4) {
+            await selfieSegmentation.send({image: v});
+        }
+        // Run as fast as the device allows
+        requestAnimationFrame(processFrame);
+    }
+
+    function onResults(results) {
+        if (!results.segmentationMask) return;
+        
+        const mask = results.segmentationMask;
+        const attr = points.geometry.attributes.position.array;
+        const scale = 0.15;
+        
+        // We capture the mask as our 'depth' proxy
+        // In SelfieSegmentation, this is a 1-channel image
+        const canvas = document.createElement('canvas');
+        canvas.width = RES;
+        canvas.height = RES;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(mask, 0, 0, RES, RES);
+        const data = ctx.getImageData(0, 0, RES, RES).data;
+        
+        lastDepthData = new Float32Array(RES * RES);
+        let i = 0;
+        let p = 0;
+
+        for (let y = 0; y < RES; y++) {
+            for (let x = 0; x < RES; x++) {
+                const brightness = data[p] / 255; // Use Red channel for depth proxy
+                lastDepthData[i/3] = brightness;
+
+                attr[i++] = (x - RES/2) * scale;
+                attr[i++] = (RES/2 - y) * scale;
+                attr[i++] = brightness * -15; // Z-axis extrusion
+                p += 4;
+            }
+        }
+        points.geometry.attributes.position.needsUpdate = true;
+        document.getElementById('btnSave').disabled = false;
+    }
+
+    function loop() {
+        if(controls) controls.update();
+        if(renderer) renderer.render(scene, camera);
+        requestAnimationFrame(loop);
     }
 
     function startGPS() {
@@ -135,46 +162,8 @@
             navigator.geolocation.watchPosition(p => {
                 coords = `${p.coords.latitude.toFixed(6)}, ${p.coords.longitude.toFixed(6)}`;
                 document.getElementById('gps').innerText = `GPS: ${coords}`;
-            }, (err) => {
-                document.getElementById('gps').innerText = "GPS: SIGNAL LOST";
-            }, {enableHighAccuracy: true});
+            }, null, {enableHighAccuracy: true});
         }
-    }
-
-    async function update() {
-        if (!isScanning || v.readyState !== 4 || !estimator) return;
-        
-        try {
-            const depthMap = await estimator.estimateDepth(v);
-            // Convert depth tensor to array
-            const depthValues = await depthMap.toArray();
-            lastDepthData = depthValues;
-
-            const attr = points.geometry.attributes.position.array;
-            let i = 0;
-            const scale = 0.15; 
-            
-            for(let y=0; y<RES; y++) {
-                for(let x=0; x<RES; x++) {
-                    // Normalize mapping
-                    attr[i++] = (x - RES/2) * scale; 
-                    attr[i++] = (RES/2 - y) * scale; 
-                    // Depth values usually 0-1, scale up for visualization
-                    attr[i++] = depthValues[y][x] * -20; 
-                }
-            }
-            points.geometry.attributes.position.needsUpdate = true;
-            document.getElementById('btnSave').disabled = false;
-        } catch (e) { 
-            console.warn("Processing Frame Error:", e); 
-        }
-    }
-
-    function loop() {
-        update();
-        if(controls) controls.update();
-        if(renderer) renderer.render(scene, camera);
-        requestAnimationFrame(loop);
     }
 
     document.getElementById('btnToggle').onclick = () => {
@@ -182,31 +171,34 @@
         const btn = document.getElementById('btnToggle');
         btn.innerText = isScanning ? "PAUSE SCAN" : "RESUME SCAN";
         btn.style.background = isScanning ? "#f00" : "#0f0";
-        document.getElementById('status').innerText = isScanning ? "STATUS: SCANNING" : "STATUS: PAUSED";
     };
 
     document.getElementById('btnSave').onclick = () => {
         if (!lastDepthData) return;
-        let out = `# SENTRY SCAN EXPORT\n# GPS: ${coords}\n# FORMAT: X Y Z\n`;
+        let out = `# SENTRY SCAN | GPS: ${coords}\n`;
         const scale = 0.15;
+        let i = 0;
         for(let y=0; y<RES; y++) {
             for(let x=0; x<RES; x++) {
-                const posX = ((x-RES/2)*scale).toFixed(3);
-                const posY = ((RES/2-y)*scale).toFixed(3);
-                const posZ = (lastDepthData[y][x]*-20).toFixed(3);
-                out += `${posX} ${posY} ${posZ}\n`;
+                const z = (lastDepthData[i] * -15).toFixed(3);
+                out += `${((x-RES/2)*scale).toFixed(3)} ${((RES/2-y)*scale).toFixed(3)} ${z}\n`;
+                i++;
             }
         }
-        const blob = new Blob([out], {type: 'text/plain'});
-        const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
-        a.href = url;
-        a.download = `sentry_scan_${Date.now()}.xyz`;
+        a.href = URL.createObjectURL(new Blob([out], {type: 'text/plain'}));
+        a.download = `sentry_${Date.now()}.xyz`;
         a.click();
-        setTimeout(() => URL.revokeObjectURL(url), 1000);
     };
 
     document.getElementById('btnInit').onclick = init;
+    
+    window.addEventListener('resize', () => {
+        if(!camera) return;
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    });
 </script>
 </body>
 </html>
