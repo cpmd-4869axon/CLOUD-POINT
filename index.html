@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Sentry LiDAR v6.0</title>
+    <title>Sentry Constructor v7.0</title>
     
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -11,53 +11,45 @@
 
     <style>
         body { margin: 0; background: #000; color: #0f0; font-family: 'Courier New', monospace; overflow: hidden; touch-action: none; }
-        
-        /* Main UI */
-        #ui { position: absolute; top: 10px; left: 10px; z-index: 100; background: rgba(0,20,0,0.8); padding: 12px; border: 1px solid #0f0; width: 220px; pointer-events: auto; }
-        
-        /* Mini Camera Window */
-        #pip { position: absolute; bottom: 20px; right: 20px; width: 120px; height: 120px; border: 2px solid #0f0; background: #000; z-index: 100; overflow: hidden; border-radius: 8px; box-shadow: 0 0 10px #0f0; }
-        #v { width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
-
-        .btn-group { display: flex; flex-direction: column; gap: 5px; margin-top: 10px; }
-        button { padding: 10px; background: #0f0; color: #000; border: none; font-weight: bold; cursor: pointer; text-transform: uppercase; font-size: 11px; }
-        .scanning { background: #f00 !important; color: #fff; animation: blink 1s infinite; }
-        @keyframes blink { 50% { opacity: 0.7; } }
-        #log { color: #0ff; font-size: 9px; margin-top: 8px; line-height: 1.2; }
+        #ui { position: absolute; top: 10px; left: 10px; z-index: 100; background: rgba(0,20,0,0.9); padding: 12px; border: 1px solid #0f0; width: 220px; }
+        #pip { position: absolute; top: 10px; right: 10px; width: 100px; height: 100px; border: 1px solid #0f0; border-radius: 4px; overflow: hidden; }
+        #v { width: 100%; height: 100%; object-fit: cover; }
+        .btn-group { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+        button { padding: 10px; background: #0f0; color: #000; border: none; font-weight: bold; cursor: pointer; text-transform: uppercase; font-size: 10px; }
+        .active { background: #f00 !important; color: #fff; box-shadow: 0 0 10px #f00; }
+        #stats { font-size: 9px; color: #0ff; margin-top: 10px; }
     </style>
 </head>
 <body>
 
 <div id="ui">
-    <div style="font-size: 14px; font-weight: bold; letter-spacing: 1px;">LiDAR SENTRY v6.0</div>
-    <div id="status" style="font-size: 10px; margin-top: 4px;">STATUS: OFFLINE</div>
-    
+    <div style="font-weight: bold;">SENTRY CONSTRUCTOR v7.0</div>
+    <div id="status" style="font-size: 10px;">SYSTEM: STANDBY</div>
     <div class="btn-group">
-        <button id="btnInit">INITIALIZE SENSORS</button>
-        <button id="btnToggle" disabled>START SCAN</button>
-        <button id="btnClear">CLEAR CLOUD</button>
-        <button id="btnSave" disabled>EXPORT .XYZ</button>
+        <button id="btnInit">1. BOOT ENGINE</button>
+        <button id="btnToggle" disabled>2. START RECONSTRUCTION</button>
+        <button id="btnClear">3. RESET WORLD</button>
+        <button id="btnSave" disabled>4. EXPORT MESH</button>
     </div>
-    <div id="log">Move device slowly to "paint" the 3D space.</div>
+    <div id="stats">VOXELS: 0</div>
 </div>
 
-<div id="pip">
-    <video id="v" autoplay playsinline muted></video>
-</div>
+<div id="pip"><video id="v" autoplay playsinline muted></video></div>
 
 <script>
     let scene, camera, renderer, controls, selfieSegmentation;
     let isScanning = false;
-    let cloudPoints = [];
-    let particleSystem;
-    const MAX_POINTS = 50000; // Limit for mobile performance
-    const RES = 48; // Capture resolution
+    let voxelMap = new Map(); // Store permanent 3D points
+    let instancedMesh;
+    const MAX_VOXELS = 60000;
+    const RES = 42; 
+    const VOXEL_SIZE = 0.25;
 
     const v = document.getElementById('v');
-    const log = document.getElementById('log');
+    const stats = document.getElementById('stats');
 
     async function init() {
-        document.getElementById('btnInit').innerText = "BOOTING...";
+        document.getElementById('btnInit').innerText = "CALIBRATING...";
         try {
             selfieSegmentation = new SelfieSegmentation({
                 locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${file}`
@@ -72,42 +64,34 @@
             
             setup3D();
             
-            document.getElementById('status').innerText = "STATUS: READY";
+            document.getElementById('status').innerText = "SYSTEM: READY";
             document.getElementById('btnToggle').disabled = false;
             document.getElementById('btnInit').style.display = "none";
             
             processFrame();
-        } catch (e) {
-            log.innerText = "CRITICAL ERROR: " + e.message;
-        }
+        } catch (e) { console.error(e); }
     }
 
     function setup3D() {
         scene = new THREE.Scene();
         camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
-        camera.position.set(0, 5, 15);
+        camera.position.set(10, 10, 20);
 
-        renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer = new THREE.WebGLRenderer({ antialias: false });
         renderer.setSize(window.innerWidth, window.innerHeight);
         document.body.appendChild(renderer.domElement);
 
         controls = new THREE.OrbitControls(camera, renderer.domElement);
         controls.enableDamping = true;
 
-        // LiDAR Floor Grid
-        const grid = new THREE.GridHelper(50, 50, 0x004400, 0x001100);
-        scene.add(grid);
+        scene.add(new THREE.GridHelper(40, 40, 0x004400, 0x001100));
 
-        // Persistent Point Cloud Geometry
-        const geo = new THREE.BufferGeometry();
-        const positions = new Float32Array(MAX_POINTS * 3);
-        const colors = new Float32Array(MAX_POINTS * 3);
-        geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-        geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-        
-        const mat = new THREE.PointsMaterial({ size: 0.08, vertexColors: true });
-        particleSystem = new THREE.Points(geo, mat);
-        scene.add(particleSystem);
+        // Use InstancedMesh for performance (Drawing 60k cubes easily)
+        const geometry = new THREE.BoxGeometry(VOXEL_SIZE, VOXEL_SIZE, VOXEL_SIZE);
+        const material = new THREE.MeshBasicMaterial({ color: 0x00ff00 });
+        instancedMesh = new THREE.InstancedMesh(geometry, material, MAX_VOXELS);
+        instancedMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+        scene.add(instancedMesh);
 
         loop();
     }
@@ -119,50 +103,51 @@
         requestAnimationFrame(processFrame);
     }
 
-    let pointIdx = 0;
     function onResults(results) {
         if (!results.segmentationMask || !isScanning) return;
         
         const mask = results.segmentationMask;
-        const posAttr = particleSystem.geometry.attributes.position.array;
-        const colAttr = particleSystem.geometry.attributes.color.array;
-        
         const canvas = document.createElement('canvas');
         canvas.width = RES; canvas.height = RES;
         const ctx = canvas.getContext('2d');
         ctx.drawImage(mask, 0, 0, RES, RES);
         const data = ctx.getImageData(0, 0, RES, RES).data;
         
-        const spread = 0.25;
+        const dummy = new THREE.Object3D();
+        const spread = 0.4;
 
-        for (let i = 0; i < RES * RES; i += 2) { // Downsample for performance
+        for (let i = 0; i < RES * RES; i += 2) {
             const depth = data[i * 4] / 255;
-            if (depth < 0.1) continue; 
+            if (depth < 0.2) continue; 
 
-            const x = (i % RES) - RES/2;
-            const y = RES/2 - Math.floor(i / RES);
+            // Calculate Local Position
+            const lx = ((i % RES) - RES/2) * spread;
+            const ly = (RES/2 - Math.floor(i / RES)) * spread;
+            const lz = depth * -18;
 
-            // Calculate World Position (Immersive LiDAR feel)
-            // We use the camera's current rotation to "place" points in space
-            const vector = new THREE.Vector3(x * spread, y * spread, depth * -15);
-            vector.applyQuaternion(camera.quaternion);
-            vector.add(camera.position);
+            // Project into World Space (The Building Effect)
+            const worldPos = new THREE.Vector3(lx, ly, lz);
+            worldPos.applyQuaternion(camera.quaternion);
+            worldPos.add(camera.position);
 
-            const writeIdx = (pointIdx % MAX_POINTS) * 3;
-            
-            posAttr[writeIdx] = vector.x;
-            posAttr[writeIdx + 1] = vector.y;
-            posAttr[writeIdx + 2] = vector.z;
+            // Quantize to Grid (Snap to 0.25 units)
+            const gx = Math.round(worldPos.x / VOXEL_SIZE) * VOXEL_SIZE;
+            const gy = Math.round(worldPos.y / VOXEL_SIZE) * VOXEL_SIZE;
+            const gz = Math.round(worldPos.z / VOXEL_SIZE) * VOXEL_SIZE;
+            const key = `${gx},${gy},${gz}`;
 
-            // LiDAR Rainbow Gradient based on Y (Height)
-            colAttr[writeIdx] = depth;          // R
-            colAttr[writeIdx + 1] = 1 - depth;  // G
-            colAttr[writeIdx + 2] = 0.5;        // B
-
-            pointIdx++;
+            if (!voxelMap.has(key) && voxelMap.size < MAX_VOXELS) {
+                voxelMap.set(key, {x: gx, y: gy, z: gz});
+                
+                // Update Instanced Mesh
+                const idx = voxelMap.size - 1;
+                dummy.position.set(gx, gy, gz);
+                dummy.updateMatrix();
+                instancedMesh.setMatrixAt(idx, dummy.matrix);
+            }
         }
-        particleSystem.geometry.attributes.position.needsUpdate = true;
-        particleSystem.geometry.attributes.color.needsUpdate = true;
+        instancedMesh.instanceMatrix.needsUpdate = true;
+        stats.innerText = `VOXELS: ${voxelMap.size} / ${MAX_VOXELS}`;
         document.getElementById('btnSave').disabled = false;
     }
 
@@ -174,27 +159,25 @@
 
     document.getElementById('btnToggle').onclick = function() {
         isScanning = !isScanning;
-        this.innerText = isScanning ? "PAUSE RECONSTRUCTION" : "RESUME SCAN";
-        this.className = isScanning ? "scanning" : "";
-        document.getElementById('status').innerText = isScanning ? "STATUS: ACTIVE MAPPING" : "STATUS: FROZEN";
+        this.innerText = isScanning ? "PAUSE BUILDING" : "RESUME BUILDING";
+        this.className = isScanning ? "active" : "";
+        document.getElementById('status').innerText = isScanning ? "SYSTEM: CONSTRUCTING" : "SYSTEM: PAUSED";
     };
 
     document.getElementById('btnClear').onclick = () => {
-        const posAttr = particleSystem.geometry.attributes.position.array;
-        posAttr.fill(0);
-        particleSystem.geometry.attributes.position.needsUpdate = true;
-        pointIdx = 0;
+        voxelMap.clear();
+        instancedMesh.instanceMatrix.needsUpdate = true;
+        stats.innerText = "VOXELS: 0";
     };
 
     document.getElementById('btnSave').onclick = () => {
-        let out = "# SENTRY LIDAR CLOUD\n";
-        const pos = particleSystem.geometry.attributes.position.array;
-        for(let i=0; i < Math.min(pointIdx, MAX_POINTS); i++) {
-            out += `${pos[i*3].toFixed(3)} ${pos[i*3+1].toFixed(3)} ${pos[i*3+2].toFixed(3)}\n`;
-        }
+        let out = "# SENTRY MESH EXPORT\n";
+        voxelMap.forEach(v => {
+            out += `${v.x.toFixed(3)} ${v.y.toFixed(3)} ${v.z.toFixed(3)}\n`;
+        });
         const a = document.createElement('a');
         a.href = URL.createObjectURL(new Blob([out], {type: 'text/plain'}));
-        a.download = `lidar_map.xyz`;
+        a.download = `constructed_world.xyz`;
         a.click();
     };
 
