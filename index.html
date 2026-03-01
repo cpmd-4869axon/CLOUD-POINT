@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cloud Point Mapper</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/depth-estimation"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; font-family: sans-serif; }
+        #ui { position: absolute; top: 10px; left: 10px; color: white; z-index: 10; background: rgba(0,0,0,0.5); padding: 10px; border-radius: 8px; }
+        #video { display: none; }
+        canvas { display: block; }
+    </style>
+</head>
+<body>
+
+<div id="ui">
+    <div id="status">Loading Models...</div>
+    <div id="gps">GPS: Acquiring...</div>
+    <button onclick="toggleCapture()">Start/Stop Camera</button>
+</div>
+
+<video id="video" autoplay playsinline></video>
+
+<script>
+    let scene, camera, renderer, points, estimator;
+    let video = document.getElementById('video');
+    const width = 640, height = 480;
+
+    async function init() {
+        // 1. Setup Three.js
+        scene = new THREE.Scene();
+        camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.z = 5;
+
+        renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        // Create Point Cloud Geometry
+        const numPoints = width * height;
+        const geometry = new THREE.BufferGeometry();
+        const positions = new Float32Array(numPoints * 3);
+        geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        
+        const material = new THREE.PointsMaterial({ size: 0.02, color: 0x00ffcc });
+        points = new THREE.Points(geometry, material);
+        scene.add(points);
+
+        // 2. Setup TF.js Depth Estimation
+        const model = depthEstimation.SupportedModels.ARPortraitDepth;
+        estimator = await depthEstimation.createEstimator(model);
+        document.getElementById('status').innerText = "Model Ready";
+
+        // 3. Setup GPS
+        if ("geolocation" in navigator) {
+            navigator.geolocation.watchPosition(pos => {
+                document.getElementById('gps').innerText = 
+                    `LAT: ${pos.coords.latitude.toFixed(4)} LON: ${pos.coords.longitude.toFixed(4)}`;
+            });
+        }
+
+        animate();
+    }
+
+    async function setupCamera() {
+        const stream = await navigator.mediaDevices.getUserMedia({ 
+            video: { width: width, height: height, facingMode: "environment" } 
+        });
+        video.srcObject = stream;
+        return new Promise(resolve => video.onloadedmetadata = resolve);
+    }
+
+    async function updatePoints() {
+        if (!estimator || video.readyState < 2) return;
+
+        const depthMap = await estimator.estimateDepth(video);
+        const depthData = await depthMap.toArray(); // Array of depth values
+        
+        const positions = points.geometry.attributes.position.array;
+        let ptr = 0;
+
+        for (let y = 0; y < height; y++) {
+            for (let x = 0; x < width; x++) {
+                const z = depthData[y][x] * -5; // Scale depth
+                positions[ptr++] = (x / width - 0.5) * 10; 
+                positions[ptr++] = (0.5 - y / height) * 10;
+                positions[ptr++] = z;
+            }
+        }
+        points.geometry.attributes.position.needsUpdate = true;
+    }
+
+    function animate() {
+        requestAnimationFrame(animate);
+        updatePoints();
+        renderer.render(scene, camera);
+    }
+
+    async function toggleCapture() {
+        await setupCamera();
+        video.play();
+    }
+
+    window.onload = init;
+</script>
+</body>
+</html>
